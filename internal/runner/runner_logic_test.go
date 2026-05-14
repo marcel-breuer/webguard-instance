@@ -34,6 +34,21 @@ func (s staticDomainLookup) Lookup(_ context.Context, target string) (domainlook
 	return result, s.err
 }
 
+type staticDNSRecordResolver struct {
+	values     []string
+	err        error
+	target     string
+	recordType string
+	timeout    time.Duration
+}
+
+func (s *staticDNSRecordResolver) Resolve(_ context.Context, target string, recordType string, timeout time.Duration) ([]string, error) {
+	s.target = target
+	s.recordType = recordType
+	s.timeout = timeout
+	return append([]string(nil), s.values...), s.err
+}
+
 func TestNormalizeHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -454,6 +469,215 @@ func TestCrawlResponseMonitoringPortReturnsNilHTTPStatusCode(t *testing.T) {
 	case <-done:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("port monitor did not connect to test listener")
+	}
+}
+
+func TestDNSRecordCheckerARecordMatchReportsUp(t *testing.T) {
+	t.Parallel()
+
+	resolver := &staticDNSRecordResolver{
+		values: []string{"192.0.2.10", "192.0.2.11"},
+	}
+	checker := NewDNSRecordChecker(resolver, log.New(io.Discard, "", 0))
+
+	status, responseTime := checker.Check(context.Background(), monitor.Monitoring{
+		Type:              monitor.TypeDNSRecord,
+		Target:            "example.com",
+		Timeout:           3,
+		DNSRecordType:     "A",
+		DNSExpectedValues: []string{"192.0.2.11", "192.0.2.10"},
+	})
+
+	if status != monitor.StatusUp {
+		t.Fatalf("expected up, got %s", status)
+	}
+	if responseTime == nil {
+		t.Fatalf("expected response time")
+	}
+	if resolver.target != "example.com" {
+		t.Fatalf("expected resolver target example.com, got %q", resolver.target)
+	}
+	if resolver.recordType != "A" {
+		t.Fatalf("expected resolver record type A, got %q", resolver.recordType)
+	}
+	if resolver.timeout != 3*time.Second {
+		t.Fatalf("expected resolver timeout 3s, got %s", resolver.timeout)
+	}
+}
+
+func TestDNSRecordCheckerARecordMismatchReportsDown(t *testing.T) {
+	t.Parallel()
+
+	checker := NewDNSRecordChecker(&staticDNSRecordResolver{
+		values: []string{"192.0.2.20"},
+	}, log.New(io.Discard, "", 0))
+
+	status, responseTime := checker.Check(context.Background(), monitor.Monitoring{
+		Target:            "example.com",
+		DNSRecordType:     "A",
+		DNSExpectedValues: []string{"192.0.2.10"},
+	})
+
+	if status != monitor.StatusDown {
+		t.Fatalf("expected down, got %s", status)
+	}
+	if responseTime == nil {
+		t.Fatalf("expected response time")
+	}
+}
+
+func TestDNSRecordCheckerMissingRecordReportsDown(t *testing.T) {
+	t.Parallel()
+
+	checker := NewDNSRecordChecker(&staticDNSRecordResolver{
+		err: errors.New("record not found"),
+	}, log.New(io.Discard, "", 0))
+
+	status, responseTime := checker.Check(context.Background(), monitor.Monitoring{
+		Target:            "example.com",
+		DNSRecordType:     "A",
+		DNSExpectedValues: []string{"192.0.2.10"},
+	})
+
+	if status != monitor.StatusDown {
+		t.Fatalf("expected down, got %s", status)
+	}
+	if responseTime == nil {
+		t.Fatalf("expected response time")
+	}
+}
+
+func TestDNSRecordCheckerExtraValueReportsDown(t *testing.T) {
+	t.Parallel()
+
+	checker := NewDNSRecordChecker(&staticDNSRecordResolver{
+		values: []string{"192.0.2.10", "192.0.2.11"},
+	}, log.New(io.Discard, "", 0))
+
+	status, _ := checker.Check(context.Background(), monitor.Monitoring{
+		Target:            "example.com",
+		DNSRecordType:     "A",
+		DNSExpectedValues: []string{"192.0.2.10"},
+	})
+
+	if status != monitor.StatusDown {
+		t.Fatalf("expected down for unexpected extra value, got %s", status)
+	}
+}
+
+func TestDNSRecordCheckerUnsupportedRecordTypeReportsDown(t *testing.T) {
+	t.Parallel()
+
+	checker := NewDNSRecordChecker(&staticDNSRecordResolver{
+		values: []string{"value"},
+	}, log.New(io.Discard, "", 0))
+
+	status, responseTime := checker.Check(context.Background(), monitor.Monitoring{
+		Target:            "example.com",
+		DNSRecordType:     "HTTPS",
+		DNSExpectedValues: []string{"value"},
+	})
+
+	if status != monitor.StatusDown {
+		t.Fatalf("expected down for unsupported record type, got %s", status)
+	}
+	if responseTime == nil {
+		t.Fatalf("expected response time")
+	}
+}
+
+func TestNormalizeDNSRecordValues(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		recordType string
+		values     []string
+		expected   []string
+	}{
+		{
+			name:       "CNAME trailing dot",
+			recordType: "CNAME",
+			values:     []string{"Target.Example.COM."},
+			expected:   []string{"target.example.com"},
+		},
+		{
+			name:       "NS trailing dot",
+			recordType: "NS",
+			values:     []string{"NS1.Example.COM."},
+			expected:   []string{"ns1.example.com"},
+		},
+		{
+			name:       "MX priority and host",
+			recordType: "MX",
+			values:     []string{"10 Mail.EXAMPLE.com."},
+			expected:   []string{"10 mail.example.com"},
+		},
+		{
+			name:       "TXT quotes",
+			recordType: "TXT",
+			values:     []string{`"v=spf1 include:example.com ~all"`},
+			expected:   []string{"v=spf1 include:example.com ~all"},
+		},
+		{
+			name:       "SOA deterministic fields",
+			recordType: "SOA",
+			values:     []string{"NS1.Example.COM. Hostmaster.Example.COM. 2026051401 7200 3600 1209600 3600"},
+			expected:   []string{"ns1.example.com hostmaster.example.com 2026051401 7200 3600 1209600 3600"},
+		},
+		{
+			name:       "CAA fields",
+			recordType: "CAA",
+			values:     []string{`0 Issue "letsencrypt.org"`},
+			expected:   []string{"0 issue letsencrypt.org"},
+		},
+		{
+			name:       "order and duplicates",
+			recordType: "A",
+			values:     []string{"192.0.2.11", "192.0.2.10", "192.0.2.10"},
+			expected:   []string{"192.0.2.10", "192.0.2.11"},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			actual, err := normalizeDNSRecordValues(testCase.values, testCase.recordType)
+			if err != nil {
+				t.Fatalf("unexpected normalize error: %v", err)
+			}
+			if !reflect.DeepEqual(actual, testCase.expected) {
+				t.Fatalf("unexpected normalized values: got %#v want %#v", actual, testCase.expected)
+			}
+		})
+	}
+}
+
+func TestCrawlResponseMonitoringDNSRecordReturnsNilHTTPStatusCode(t *testing.T) {
+	t.Parallel()
+
+	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
+	r.dnsChecker = NewDNSRecordChecker(&staticDNSRecordResolver{
+		values: []string{"target.example.com."},
+	}, log.New(io.Discard, "", 0))
+
+	status, responseTime, httpStatusCode := r.crawlResponseMonitoring(context.Background(), monitor.Monitoring{
+		Type:              monitor.TypeDNSRecord,
+		Target:            "example.com",
+		DNSRecordType:     "CNAME",
+		DNSExpectedValues: []string{"target.example.com"},
+	})
+
+	if status != monitor.StatusUp {
+		t.Fatalf("expected up, got %s", status)
+	}
+	if responseTime == nil {
+		t.Fatalf("expected response time")
+	}
+	if httpStatusCode != nil {
+		t.Fatalf("expected nil http status code for dns_record monitoring")
 	}
 }
 

@@ -15,6 +15,7 @@ const (
 	TypePing             Type = "ping"
 	TypeKeyword          Type = "keyword"
 	TypePort             Type = "port"
+	TypeDNSRecord        Type = "dns_record"
 	TypeHeartbeat        Type = "heartbeat"
 	TypeDomainExpiration Type = "domain_expiration"
 )
@@ -55,6 +56,9 @@ type Monitoring struct {
 	Keyword string `json:"keyword"`
 	Port    int    `json:"port"`
 
+	DNSRecordType     string   `json:"dns_record_type"`
+	DNSExpectedValues []string `json:"dns_expected_values"`
+
 	HeartbeatIntervalMinutes *int       `json:"heartbeat_interval_minutes"`
 	HeartbeatGraceMinutes    *int       `json:"heartbeat_grace_minutes"`
 	HeartbeatLastPingAt      *time.Time `json:"heartbeat_last_ping_at"`
@@ -81,6 +85,9 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 
 		Keyword string `json:"keyword"`
 		Port    any    `json:"port"`
+
+		DNSRecordType     string   `json:"dns_record_type"`
+		DNSExpectedValues []string `json:"dns_expected_values"`
 
 		HeartbeatIntervalMinutes any `json:"heartbeat_interval_minutes"`
 		HeartbeatGraceMinutes    any `json:"heartbeat_grace_minutes"`
@@ -141,6 +148,9 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 
 		Keyword: raw.Keyword,
 		Port:    port,
+
+		DNSRecordType:     raw.DNSRecordType,
+		DNSExpectedValues: raw.DNSExpectedValues,
 
 		HeartbeatIntervalMinutes: heartbeatIntervalMinutes,
 		HeartbeatGraceMinutes:    heartbeatGraceMinutes,
