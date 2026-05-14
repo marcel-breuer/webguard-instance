@@ -135,11 +135,12 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 			t.Fatalf("expected location de-1, got %q", call.location)
 		}
 
-		if len(call.types) == 4 &&
+		if len(call.types) == 5 &&
 			call.types[0] == monitor.TypeHTTP &&
 			call.types[1] == monitor.TypePing &&
 			call.types[2] == monitor.TypeKeyword &&
-			call.types[3] == monitor.TypePort {
+			call.types[3] == monitor.TypePort &&
+			call.types[4] == monitor.TypeDNSRecord {
 			foundResponseFetch = true
 			continue
 		}
@@ -216,11 +217,12 @@ func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
 		if call.location != "us-1" {
 			t.Fatalf("expected location us-1, got %q", call.location)
 		}
-		if len(call.types) == 4 &&
+		if len(call.types) == 5 &&
 			call.types[0] == monitor.TypeHTTP &&
 			call.types[1] == monitor.TypePing &&
 			call.types[2] == monitor.TypeKeyword &&
-			call.types[3] == monitor.TypePort {
+			call.types[3] == monitor.TypePort &&
+			call.types[4] == monitor.TypeDNSRecord {
 			continue
 		}
 		if len(call.types) == 3 &&
@@ -347,6 +349,54 @@ func TestRunResponsePostsHTTPStatusCodeForHTTPAndKeywordMonitoring(t *testing.T)
 		if *payload.HTTPStatusCode != http.StatusCreated {
 			t.Fatalf("expected http_status_code=%d for %s, got %d", http.StatusCreated, monitoringID, *payload.HTTPStatusCode)
 		}
+	}
+}
+
+func TestRunResponsePostsDNSRecordResultWithNilHTTPStatusCode(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{
+		responseMonitorings: []monitor.Monitoring{
+			{
+				ID:                "dns-monitoring",
+				Type:              monitor.TypeDNSRecord,
+				Target:            "example.com",
+				Timeout:           5,
+				DNSRecordType:     "A",
+				DNSExpectedValues: []string{"192.0.2.10"},
+			},
+		},
+	}
+
+	cfg := config.Config{
+		WebGuardLocation:    "de-1",
+		QueueDefaultWorkers: 1,
+	}
+	runner := New(client, cfg, log.New(io.Discard, "", 0))
+	runner.dnsChecker = NewDNSRecordChecker(&staticDNSRecordResolver{
+		values: []string{"192.0.2.10"},
+	}, log.New(io.Discard, "", 0))
+
+	if err := runner.runResponse(context.Background()); err != nil {
+		t.Fatalf("runResponse failed: %v", err)
+	}
+
+	postedResponses := client.snapshotPostedResponses()
+	if len(postedResponses) != 1 {
+		t.Fatalf("expected 1 posted response, got %d", len(postedResponses))
+	}
+	payload := postedResponses[0]
+	if payload.MonitoringID != "dns-monitoring" {
+		t.Fatalf("expected monitoring_id dns-monitoring, got %s", payload.MonitoringID)
+	}
+	if payload.Status != monitor.StatusUp {
+		t.Fatalf("expected up status, got %s", payload.Status)
+	}
+	if payload.ResponseTime == nil {
+		t.Fatalf("expected response_time")
+	}
+	if payload.HTTPStatusCode != nil {
+		t.Fatalf("expected nil http_status_code for dns record response")
 	}
 }
 

@@ -41,6 +41,7 @@ var responseMonitoringTypes = []monitor.Type{
 	monitor.TypePing,
 	monitor.TypeKeyword,
 	monitor.TypePort,
+	monitor.TypeDNSRecord,
 }
 
 var sslMonitoringTypes = []monitor.Type{
@@ -69,6 +70,7 @@ type Runner struct {
 	cfg          config.Config
 	logger       *log.Logger
 	domainLookup DomainLookup
+	dnsChecker   *DNSRecordChecker
 }
 
 func New(client CoreClient, cfg config.Config, logger *log.Logger) *Runner {
@@ -80,6 +82,7 @@ func New(client CoreClient, cfg config.Config, logger *log.Logger) *Runner {
 		cfg:          cfg,
 		logger:       logger,
 		domainLookup: domainlookup.New(10 * time.Second),
+		dnsChecker:   NewDNSRecordChecker(nil, logger),
 	}
 }
 
@@ -391,6 +394,13 @@ func (r *Runner) crawlResponseMonitoring(ctx context.Context, monitoring monitor
 	case monitor.TypePort:
 		status, responseTime := handlePortMonitoring(monitoring)
 		return status, responseTime, nil
+	case monitor.TypeDNSRecord:
+		checker := r.dnsChecker
+		if checker == nil {
+			checker = NewDNSRecordChecker(nil, r.logger)
+		}
+		status, responseTime := checker.Check(ctx, monitoring)
+		return status, responseTime, nil
 	case monitor.TypeHeartbeat:
 		return monitor.StatusUnknown, nil, nil
 	default:
@@ -400,7 +410,7 @@ func (r *Runner) crawlResponseMonitoring(ctx context.Context, monitoring monitor
 
 func supportsResponseChecks(monitoringType monitor.Type) bool {
 	switch monitoringType {
-	case monitor.TypeHTTP, monitor.TypePing, monitor.TypeKeyword, monitor.TypePort:
+	case monitor.TypeHTTP, monitor.TypePing, monitor.TypeKeyword, monitor.TypePort, monitor.TypeDNSRecord:
 		return true
 	default:
 		return false
