@@ -101,3 +101,4 @@ See `.env.example` for full defaults.
   - formatting, linting, tests, binary build, container build check
 - `.github/workflows/docker-image.yml`
   - multi-arch image build and publish to GHCR on `main` and `v*` tags
+  - GitHub release changelog generation for new `v*` tags
