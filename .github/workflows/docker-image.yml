@@ -59,21 +59,48 @@ jobs:
   release:
     name: Generate Changelog
     runs-on: ubuntu-latest
-    needs: publish
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
-      - name: Create GitHub release changelog
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Generate release notes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME already exists; skipping changelog generation."
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            --field tag_name="$GITHUB_REF_NAME" \
+            --jq ".body" > RELEASE_NOTES.md
+
+      - name: Update CHANGELOG.md
+        run: bash .github/scripts/update-changelog.sh RELEASE_NOTES.md
+
+      - name: Commit changelog
+        run: |
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md is already up to date."
             exit 0
           fi
 
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog for ${GITHUB_REF_NAME}"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file RELEASE_NOTES.md \
+          || gh release edit "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md
