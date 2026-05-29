@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/m-breuer/webguard-instance-v2/internal/config"
-	"github.com/m-breuer/webguard-instance-v2/internal/core"
-	"github.com/m-breuer/webguard-instance-v2/internal/domainlookup"
-	"github.com/m-breuer/webguard-instance-v2/internal/monitor"
+	"github.com/marcel-breuer/webguard-instance/internal/config"
+	"github.com/marcel-breuer/webguard-instance/internal/core"
+	"github.com/marcel-breuer/webguard-instance/internal/domainlookup"
+	"github.com/marcel-breuer/webguard-instance/internal/monitor"
 )
 
 type staticDomainLookup struct {

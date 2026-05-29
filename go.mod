@@ -1,4 +1,4 @@
-module github.com/m-breuer/webguard-instance-v2
+module github.com/marcel-breuer/webguard-instance
 
 go 1.26
 
