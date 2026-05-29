@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/m-breuer/webguard-instance-v2/internal/config"
-	"github.com/m-breuer/webguard-instance-v2/internal/monitor"
+	"github.com/marcel-breuer/webguard-instance/internal/config"
+	"github.com/marcel-breuer/webguard-instance/internal/monitor"
 )
 
 type getMonitoringsCall struct {

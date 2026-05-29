@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/m-breuer/webguard-instance-v2/internal/config"
-	"github.com/m-breuer/webguard-instance-v2/internal/core"
-	"github.com/m-breuer/webguard-instance-v2/internal/runner"
-	"github.com/m-breuer/webguard-instance-v2/internal/scheduler"
-	"github.com/m-breuer/webguard-instance-v2/internal/server"
+	"github.com/marcel-breuer/webguard-instance/internal/config"
+	"github.com/marcel-breuer/webguard-instance/internal/core"
+	"github.com/marcel-breuer/webguard-instance/internal/runner"
+	"github.com/marcel-breuer/webguard-instance/internal/scheduler"
+	"github.com/marcel-breuer/webguard-instance/internal/server"
 )
 
 type monitoringService interface {

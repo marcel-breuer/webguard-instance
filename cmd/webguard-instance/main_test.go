@@ -7,7 +7,7 @@ import (
 	"log"
 	"testing"
 
-	"github.com/m-breuer/webguard-instance-v2/internal/config"
+	"github.com/marcel-breuer/webguard-instance/internal/config"
 )
 
 type fakeMonitoringService struct {

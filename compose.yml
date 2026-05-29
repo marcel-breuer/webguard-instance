@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: production
-    image: ghcr.io/m-breuer/webguard-instance-v2:latest
+    image: ghcr.io/marcel-breuer/webguard-instance:latest
     env_file:
       - .env
     environment:

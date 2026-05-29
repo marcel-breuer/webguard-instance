@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/m-breuer/webguard-instance-v2/internal/monitor"
+	"github.com/marcel-breuer/webguard-instance/internal/monitor"
 )
 
 func TestGetMonitoringsIncludesHeadersAndQuery(t *testing.T) {

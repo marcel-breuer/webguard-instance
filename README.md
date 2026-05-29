@@ -1,11 +1,10 @@
-# WebGuard Instance (New Version)
+# WebGuard Instance
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > 💡 **System Architecture Note:** This repository contains the **Worker Node**. It requires a running WebGuard Core instance to receive monitoring jobs and report results.
 
-This repository is the new version of the WebGuard instance service.  
-It is built to stay compatible with the current core integration while improving runtime speed and simplifying deployment.
+WebGuard Instance is a worker service for executing monitoring jobs from WebGuard Core and reporting the results back to the core API.
 
 ## Features
 
@@ -36,8 +35,8 @@ It is built to stay compatible with the current core integration while improving
 
 1. **Clone the repository**
    ```bash
-   git clone git@github.com:m-breuer/webguard-instance-v2.git
-   cd webguard-instance-v2
+   git clone git@github.com:marcel-breuer/webguard-instance.git
+   cd webguard-instance
    ```
 
 2. **Configure environment**
