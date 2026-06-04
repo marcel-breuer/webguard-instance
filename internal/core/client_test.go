@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -350,6 +351,21 @@ func TestGetMonitoringsReturnsStatusError(t *testing.T) {
 	}
 	if statusErr.Body != "unauthorized" {
 		t.Fatalf("expected body unauthorized, got %q", statusErr.Body)
+	}
+}
+
+func TestGetMonitoringsRejectsOversizedResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte(strings.Repeat("a", maxResponseBodyBytes+1)))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	_, err := client.GetMonitorings(context.Background(), "de-1", nil)
+	if err == nil {
+		t.Fatalf("expected oversized response error")
 	}
 }
 

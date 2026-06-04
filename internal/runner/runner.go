@@ -30,6 +30,8 @@ import (
 const fixedHTTPRetryTimes = 1
 const fixedHTTPRetryDelay = 250 * time.Millisecond
 const fixedHTTPMaxRedirects = 5
+const fixedHTTPTimeoutSeconds = 30
+const fixedHTTPMaxResponseBytes = 2 << 20
 const fixedPingTimeoutSeconds = 5
 
 var pingLatencyPattern = regexp.MustCompile(`time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms`)
@@ -202,7 +204,7 @@ func (r *Runner) runSSL(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				payload := r.crawlMonitoringSSL(monitoring)
+				payload := r.crawlMonitoringSSL(ctx, monitoring)
 				if err := r.client.PostSSLResult(ctx, payload); err != nil {
 					r.logger.Printf("Failed to post SSL result (monitoring_id=%s): %v", monitoring.ID, err)
 				}
@@ -387,12 +389,12 @@ func (r *Runner) crawlResponseMonitoring(ctx context.Context, monitoring monitor
 	case monitor.TypeHTTP:
 		return r.handleHTTPMonitoring(ctx, monitoring)
 	case monitor.TypePing:
-		status, responseTime := handlePingMonitoring(monitoring)
+		status, responseTime := handlePingMonitoring(ctx, monitoring, r.egressPolicy())
 		return status, responseTime, nil
 	case monitor.TypeKeyword:
 		return r.handleKeywordMonitoring(ctx, monitoring)
 	case monitor.TypePort:
-		status, responseTime := handlePortMonitoring(monitoring)
+		status, responseTime := handlePortMonitoring(ctx, monitoring, r.egressPolicy())
 		return status, responseTime, nil
 	case monitor.TypeDNSRecord:
 		checker := r.dnsChecker
@@ -454,9 +456,16 @@ func (r *Runner) handleKeywordMonitoring(ctx context.Context, monitoring monitor
 	return monitor.StatusDown, nil, httpStatusCode
 }
 
-func handlePingMonitoring(monitoring monitor.Monitoring) (monitor.Status, *float64) {
+func (r *Runner) egressPolicy() target.EgressPolicy {
+	return target.EgressPolicy{AllowPrivate: r.cfg.AllowPrivateTargets}
+}
+
+func handlePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy) (monitor.Status, *float64) {
 	host, err := target.Host(monitoring.Target)
 	if err != nil {
+		return monitor.StatusDown, nil
+	}
+	if err := target.ValidateHost(ctx, host, policy); err != nil {
 		return monitor.StatusDown, nil
 	}
 
@@ -522,7 +531,7 @@ func parsePingLatency(output []byte) *float64 {
 	return &rounded
 }
 
-func handlePortMonitoring(monitoring monitor.Monitoring) (monitor.Status, *float64) {
+func handlePortMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy) (monitor.Status, *float64) {
 	if monitoring.Port <= 0 {
 		return monitor.StatusDown, nil
 	}
@@ -533,7 +542,9 @@ func handlePortMonitoring(monitoring monitor.Monitoring) (monitor.Status, *float
 	}
 
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	conn, err := target.SafeDialContext(policy)(dialCtx, "tcp", address)
 	if err != nil {
 		return monitor.StatusDown, nil
 	}
@@ -544,9 +555,9 @@ func handlePortMonitoring(monitoring monitor.Monitoring) (monitor.Status, *float
 }
 
 func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
-	targetURL := strings.TrimSpace(monitoring.Target)
-	if targetURL == "" {
-		return 0, "", fmt.Errorf("monitoring target is empty")
+	targetURL, err := target.HTTPURL(ctx, monitoring.Target, r.egressPolicy())
+	if err != nil {
+		return 0, "", err
 	}
 
 	method := strings.ToLower(strings.TrimSpace(string(monitoring.HTTPMethod)))
@@ -565,19 +576,22 @@ func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Moni
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // Keep PHP compatibility (withoutVerifying)
-			},
+			DialContext: target.SafeDialContext(r.egressPolicy()),
 		},
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= fixedHTTPMaxRedirects {
 				return fmt.Errorf("stopped after %d redirects", fixedHTTPMaxRedirects)
+			}
+			if err := target.ValidateHost(request.Context(), request.URL.Hostname(), r.egressPolicy()); err != nil {
+				return err
 			}
 			return nil
 		},
 	}
 	if monitoring.Timeout > 0 {
 		httpClient.Timeout = time.Duration(monitoring.Timeout) * time.Second
+	} else {
+		httpClient.Timeout = fixedHTTPTimeoutSeconds * time.Second
 	}
 
 	retryTimes := fixedHTTPRetryTimes
@@ -591,7 +605,7 @@ func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Moni
 			requestBody = bytes.NewReader(body)
 		}
 
-		request, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), targetURL, requestBody)
+		request, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), targetURL.String(), requestBody)
 		if err != nil {
 			return 0, "", err
 		}
@@ -613,7 +627,7 @@ func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Moni
 			return 0, "", lastErr
 		}
 
-		payload, err := io.ReadAll(response.Body)
+		payload, err := readLimitedBody(response.Body, fixedHTTPMaxResponseBytes)
 		_ = response.Body.Close()
 		if err != nil {
 			return 0, "", err
@@ -625,7 +639,7 @@ func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Moni
 	return 0, "", lastErr
 }
 
-func (r *Runner) crawlMonitoringSSL(monitoring monitor.Monitoring) monitor.SSLResultPayload {
+func (r *Runner) crawlMonitoringSSL(ctx context.Context, monitoring monitor.Monitoring) monitor.SSLResultPayload {
 	payload := monitor.SSLResultPayload{
 		MonitoringID: monitoring.ID,
 		IsValid:      false,
@@ -636,11 +650,16 @@ func (r *Runner) crawlMonitoringSSL(monitoring monitor.Monitoring) monitor.SSLRe
 		return payload
 	}
 
-	connection, err := tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", address, &tls.Config{
-		ServerName:         serverName,
-		InsecureSkipVerify: true, //nolint:gosec // Needed to inspect certificate even when invalid.
-	})
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	rawConn, err := target.SafeDialContext(r.egressPolicy())(dialCtx, "tcp", address)
 	if err != nil {
+		return payload
+	}
+	connection := tls.Client(rawConn, &tls.Config{ServerName: serverName})
+	err = connection.HandshakeContext(dialCtx)
+	if err != nil {
+		_ = rawConn.Close()
 		return payload
 	}
 	defer connection.Close()
@@ -743,6 +762,17 @@ func normalizeHeaders(rawHeaders any) map[string]string {
 	}
 
 	return result
+}
+
+func readLimitedBody(reader io.Reader, maxBytes int64) ([]byte, error) {
+	payload, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > maxBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", maxBytes)
+	}
+	return payload, nil
 }
 
 func normalizeBody(rawBody any) []byte {

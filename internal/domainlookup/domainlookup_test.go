@@ -2,6 +2,7 @@ package domainlookup
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -22,6 +23,39 @@ func TestLookupCandidatesIncludeParentDomains(t *testing.T) {
 	expected := []string{"subdomain.example.com", "example.com"}
 	if !reflect.DeepEqual(got, expected) {
 		t.Fatalf("unexpected candidates: got %#v want %#v", got, expected)
+	}
+}
+
+func TestValidDomainNameRejectsExcessiveLabels(t *testing.T) {
+	t.Parallel()
+
+	labels := make([]string, maxDomainLabels+1)
+	for i := range labels {
+		labels[i] = "a"
+	}
+	if validDomainName(strings.Join(labels, ".")) {
+		t.Fatalf("expected excessive label count to be rejected")
+	}
+}
+
+func TestValidDomainNameRejectsMalformedLabels(t *testing.T) {
+	t.Parallel()
+
+	testCases := []string{
+		"-example.com",
+		"example-.com",
+		"exa_mple.com",
+		strings.Repeat("a", maxDomainLabelLength+1) + ".com",
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase, func(t *testing.T) {
+			t.Parallel()
+
+			if validDomainName(testCase) {
+				t.Fatalf("expected %q to be rejected", testCase)
+			}
+		})
 	}
 }
 

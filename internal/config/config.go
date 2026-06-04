@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -11,6 +12,7 @@ type Config struct {
 	WebGuardLocation   string
 
 	QueueDefaultWorkers int
+	AllowPrivateTargets bool
 
 	Address string
 }
@@ -23,6 +25,7 @@ func FromEnv() Config {
 		WebGuardLocation:   env("WEBGUARD_LOCATION", ""),
 
 		QueueDefaultWorkers: envInt("QUEUE_DEFAULT_WORKERS", 3),
+		AllowPrivateTargets: envBool("WEBGUARD_ALLOW_PRIVATE_TARGETS", false),
 
 		Address: env("BIND_ADDRESS", ":"+port),
 	}
@@ -46,4 +49,19 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func envBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }

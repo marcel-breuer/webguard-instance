@@ -90,6 +90,7 @@ Main integration settings:
 Runtime settings:
 
 - `QUEUE_DEFAULT_WORKERS` (default: `3`)
+- `WEBGUARD_ALLOW_PRIVATE_TARGETS` (default: `false`; set to `true` only when this worker should monitor private, loopback, or link-local targets)
 - `PORT` (default: `8080`)
 
 See `.env.example` for full defaults.

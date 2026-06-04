@@ -115,6 +115,7 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 	cfg := config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
+		AllowPrivateTargets: true,
 	}
 	runner := New(client, cfg, log.New(io.Discard, "", 0))
 
@@ -266,6 +267,7 @@ func TestRunMonitoringSkipsHeartbeatMonitoringsWithoutPostingResults(t *testing.
 	cfg := config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
+		AllowPrivateTargets: true,
 	}
 	runner := New(client, cfg, log.New(&logs, "", 0))
 
@@ -321,6 +323,7 @@ func TestRunResponsePostsHTTPStatusCodeForHTTPAndKeywordMonitoring(t *testing.T)
 	cfg := config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
+		AllowPrivateTargets: true,
 	}
 	runner := New(client, cfg, log.New(io.Discard, "", 0))
 
