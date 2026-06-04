@@ -9,6 +9,7 @@ func TestFromEnvDefaults(t *testing.T) {
 	t.Setenv("WEBGUARD_CORE_API_URL", "")
 	t.Setenv("WEBGUARD_LOCATION", "")
 	t.Setenv("QUEUE_DEFAULT_WORKERS", "")
+	t.Setenv("WEBGUARD_ALLOW_PRIVATE_TARGETS", "")
 
 	cfg := FromEnv()
 
@@ -17,6 +18,9 @@ func TestFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.QueueDefaultWorkers != 3 {
 		t.Fatalf("expected default workers 3, got %d", cfg.QueueDefaultWorkers)
+	}
+	if cfg.AllowPrivateTargets {
+		t.Fatalf("expected private targets to be disabled by default")
 	}
 }
 
@@ -27,6 +31,7 @@ func TestFromEnvCustomValues(t *testing.T) {
 	t.Setenv("WEBGUARD_CORE_API_URL", "https://core.example.com")
 	t.Setenv("WEBGUARD_LOCATION", "de-1")
 	t.Setenv("QUEUE_DEFAULT_WORKERS", "7")
+	t.Setenv("WEBGUARD_ALLOW_PRIVATE_TARGETS", "true")
 
 	cfg := FromEnv()
 
@@ -44,5 +49,8 @@ func TestFromEnvCustomValues(t *testing.T) {
 	}
 	if cfg.QueueDefaultWorkers != 7 {
 		t.Fatalf("expected workers 7, got %d", cfg.QueueDefaultWorkers)
+	}
+	if !cfg.AllowPrivateTargets {
+		t.Fatalf("expected private targets to be enabled")
 	}
 }

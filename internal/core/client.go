@@ -14,6 +14,8 @@ import (
 	"github.com/marcel-breuer/webguard-instance/internal/monitor"
 )
 
+const maxResponseBodyBytes = 4 << 20
+
 type Client struct {
 	baseURL      string
 	apiKey       string
@@ -183,7 +185,7 @@ func (c *Client) doJSON(request *http.Request, out any) error {
 	}
 	defer response.Body.Close()
 
-	raw, err := io.ReadAll(response.Body)
+	raw, err := readLimitedBody(response.Body, maxResponseBodyBytes)
 	if err != nil {
 		return err
 	}
@@ -200,4 +202,15 @@ func (c *Client) doJSON(request *http.Request, out any) error {
 	}
 
 	return json.Unmarshal(raw, out)
+}
+
+func readLimitedBody(reader io.Reader, maxBytes int64) ([]byte, error) {
+	payload, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > maxBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", maxBytes)
+	}
+	return payload, nil
 }

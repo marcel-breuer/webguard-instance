@@ -1,6 +1,9 @@
 package target
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestTCPAddress(t *testing.T) {
 	t.Parallel()
@@ -83,5 +86,47 @@ func TestSSLAddressAndServerNameEmptyTarget(t *testing.T) {
 	_, _, err := SSLAddressAndServerName("   ")
 	if err == nil {
 		t.Fatalf("expected error for empty target")
+	}
+}
+
+func TestValidateHostRejectsPrivateAddressesByDefault(t *testing.T) {
+	t.Parallel()
+
+	testCases := []string{
+		"127.0.0.1",
+		"::1",
+		"10.0.0.1",
+		"172.16.0.1",
+		"192.168.0.1",
+		"169.254.169.254",
+		"localhost",
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase, func(t *testing.T) {
+			t.Parallel()
+
+			if err := ValidateHost(context.Background(), testCase, EgressPolicy{}); err == nil {
+				t.Fatalf("expected %s to be rejected", testCase)
+			}
+		})
+	}
+}
+
+func TestValidateHostAllowsPrivateAddressesWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	if err := ValidateHost(context.Background(), "127.0.0.1", EgressPolicy{AllowPrivate: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHTTPURLRejectsUnsupportedSchemes(t *testing.T) {
+	t.Parallel()
+
+	_, err := HTTPURL(context.Background(), "file:///etc/passwd", EgressPolicy{AllowPrivate: true})
+	if err == nil {
+		t.Fatalf("expected unsupported scheme error")
 	}
 }

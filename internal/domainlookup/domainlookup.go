@@ -15,6 +15,9 @@ import (
 )
 
 const defaultRDAPBaseURL = "https://rdap.org/domain/"
+const maxDomainLength = 253
+const maxDomainLabels = 127
+const maxDomainLabelLength = 63
 
 var (
 	expirationFieldPattern = regexp.MustCompile(`(?i)^\s*(registry expiry date|registrar registration expiration date|expiration date|paid-till|expiry date)\s*:\s*(.+?)\s*$`)
@@ -74,7 +77,7 @@ func (l *Lookup) Lookup(ctx context.Context, target string) (Result, error) {
 		Domain:    domain,
 		CheckedAt: checkedAt,
 	}
-	if domain == "" || strings.Contains(domain, "/") {
+	if !validDomainName(domain) {
 		return result, nil
 	}
 
@@ -142,6 +145,28 @@ func (l *Lookup) lookupCandidate(ctx context.Context, domain string, checkedAt t
 
 func NormalizeTarget(target string) string {
 	return strings.Trim(strings.TrimSpace(strings.ToLower(target)), ".")
+}
+
+func validDomainName(domain string) bool {
+	if domain == "" || len(domain) > maxDomainLength || strings.Contains(domain, "/") {
+		return false
+	}
+	labels := strings.Split(domain, ".")
+	if len(labels) == 0 || len(labels) > maxDomainLabels {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > maxDomainLabelLength || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, char := range label {
+			if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func (l *Lookup) lookupRDAP(ctx context.Context, domain string, checkedAt time.Time) (Result, error) {
