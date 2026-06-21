@@ -56,6 +56,55 @@ func TestMonitoringUnmarshalWithStringID(t *testing.T) {
 	}
 }
 
+func TestMonitoringUnmarshalPreferredLocationFallback(t *testing.T) {
+	t.Parallel()
+
+	var monitoring Monitoring
+	err := json.Unmarshal([]byte(`{
+		"id": "42",
+		"type": "http",
+		"preferred_location": "de-1",
+		"target": "https://example.com",
+		"timeout": 10,
+		"maintenance_active": false
+	}`), &monitoring)
+	if err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	if monitoring.PreferredLocation != "de-1" {
+		t.Fatalf("expected preferred_location de-1, got %q", monitoring.PreferredLocation)
+	}
+	if monitoring.PreferredLocations != nil {
+		t.Fatalf("expected preferred_locations to be nil for legacy payload, got %#v", monitoring.PreferredLocations)
+	}
+}
+
+func TestMonitoringUnmarshalPreferredLocations(t *testing.T) {
+	t.Parallel()
+
+	var monitoring Monitoring
+	err := json.Unmarshal([]byte(`{
+		"id": "42",
+		"type": "http",
+		"preferred_location": "de-1",
+		"preferred_locations": ["de-1", "us-1"],
+		"target": "https://example.com",
+		"timeout": 10,
+		"maintenance_active": false
+	}`), &monitoring)
+	if err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+
+	if monitoring.PreferredLocation != "de-1" {
+		t.Fatalf("expected preferred_location de-1, got %q", monitoring.PreferredLocation)
+	}
+	if len(monitoring.PreferredLocations) != 2 || monitoring.PreferredLocations[0] != "de-1" || monitoring.PreferredLocations[1] != "us-1" {
+		t.Fatalf("unexpected preferred_locations: %#v", monitoring.PreferredLocations)
+	}
+}
+
 func TestMonitoringUnmarshalWithInvalidID(t *testing.T) {
 	t.Parallel()
 

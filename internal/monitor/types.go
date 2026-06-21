@@ -42,6 +42,9 @@ type Monitoring struct {
 	ID   string `json:"id"`
 	Type Type   `json:"type"`
 
+	PreferredLocation  string   `json:"preferred_location"`
+	PreferredLocations []string `json:"preferred_locations,omitempty"`
+
 	Target string `json:"target"`
 
 	Timeout int `json:"timeout"`
@@ -71,6 +74,9 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 		ID any `json:"id"`
 
 		Type Type `json:"type"`
+
+		PreferredLocation  string   `json:"preferred_location"`
+		PreferredLocations []string `json:"preferred_locations"`
 
 		Target string `json:"target"`
 
@@ -134,6 +140,9 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 	*m = Monitoring{
 		ID:   id,
 		Type: raw.Type,
+
+		PreferredLocation:  strings.TrimSpace(raw.PreferredLocation),
+		PreferredLocations: raw.PreferredLocations,
 
 		Target: raw.Target,
 
