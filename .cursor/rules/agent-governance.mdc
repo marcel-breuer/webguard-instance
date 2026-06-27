@@ -1,0 +1,8 @@
+---
+description: Repository governance for all coding agents
+alwaysApply: true
+---
+
+Read and follow `AGENTS.md` before implementing changes. If a local `AGENTS.md` applies, follow it for directory-specific details without weakening root requirements.
+
+Use `.agent/skills/README.md` to identify relevant shared skills, then read only those skill files. Keep changes scoped, prefer Docker-based validation, and keep outputs concise.
