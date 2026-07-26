@@ -5,12 +5,18 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/marcel-breuer/webguard-instance/internal/application"
 )
 
 func Start(ctx context.Context, address string, logger *log.Logger) error {
+	return StartWithHandler(ctx, address, logger, HealthHandler())
+}
+
+func StartWithHandler(ctx context.Context, address string, logger *log.Logger, handler http.Handler) error {
 	server := &http.Server{
 		Addr:              address,
-		Handler:           HealthHandler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -33,18 +39,5 @@ func Start(ctx context.Context, address string, logger *log.Logger) error {
 }
 
 func HealthHandler() http.Handler {
-	mux := http.NewServeMux()
-	healthHandler := func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
-			writer.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		writer.WriteHeader(http.StatusOK)
-		_, _ = writer.Write([]byte("ok"))
-	}
-
-	mux.HandleFunc("/", healthHandler)
-	mux.HandleFunc("/health", healthHandler)
-
-	return mux
+	return NewHandler(ReadinessFunc(func() bool { return true }), application.NewTelemetry())
 }

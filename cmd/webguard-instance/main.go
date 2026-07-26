@@ -26,8 +26,10 @@ type serveFunc func(logger *log.Logger, service monitoringService, cfg config.Co
 func main() {
 	logger := log.New(os.Stdout, "", 0)
 	cfg := config.FromEnv()
+	telemetry := application.NewTelemetry()
 	coreClient := coreapi.NewClient(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation)
-	service := application.NewExecutionController(runner.New(coreClient, cfg, logger), logger, cfg.RunMaxConcurrency)
+	coreClient.SetTelemetry(telemetry)
+	service := application.NewExecutionControllerWithTelemetry(runner.NewWithTelemetry(coreClient, cfg, logger, telemetry), logger, cfg.RunMaxConcurrency, telemetry)
 
 	exitCode := run(os.Args[1:], logger, cfg, service, runServe, os.Stderr)
 	os.Exit(exitCode)
@@ -55,12 +57,40 @@ func run(args []string, logger *log.Logger, cfg config.Config, service monitorin
 }
 
 func runServe(logger *log.Logger, service monitoringService, cfg config.Config) int {
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	signalContext, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopSignals()
+	dispatchContext, stopDispatch := context.WithCancel(context.Background())
+	defer stopDispatch()
+	healthContext, stopHealth := context.WithCancel(context.Background())
+	defer stopHealth()
 
-	go scheduler.RunEveryFiveMinutes(ctx, logger, service.RunMonitoring)
+	readiness := health.ReadinessFunc(func() bool { return cfg.IsReady() })
+	telemetry := application.NewTelemetry()
+	if controller, ok := service.(*application.ExecutionController); ok {
+		telemetry = controller.Telemetry()
+		readiness = health.ReadinessFunc(func() bool { return cfg.IsReady() && !controller.IsDraining() })
+		go func() {
+			<-signalContext.Done()
+			controller.BeginDrain()
+			stopDispatch()
+			drainContext, cancelDrain := context.WithTimeout(context.Background(), cfg.ShutdownDrainTimeout)
+			defer cancelDrain()
+			if !controller.WaitForIdle(drainContext) && logger != nil {
+				logger.Println("Shutdown drain deadline reached with monitoring work still active.")
+			}
+			stopHealth()
+		}()
+	} else {
+		go func() {
+			<-signalContext.Done()
+			stopDispatch()
+			stopHealth()
+		}()
+	}
 
-	if err := health.Start(ctx, cfg.Address, logger); err != nil {
+	go scheduler.RunEveryFiveMinutes(dispatchContext, logger, service.RunMonitoring)
+
+	if err := health.StartWithHandler(healthContext, cfg.Address, logger, health.NewHandler(readiness, telemetry)); err != nil {
 		logger.Printf("Health server exited with error: %v", err)
 		return 1
 	}

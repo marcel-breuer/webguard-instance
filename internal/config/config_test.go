@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestFromEnvDefaults(t *testing.T) {
 	t.Setenv("PORT", "")
@@ -15,6 +18,7 @@ func TestFromEnvDefaults(t *testing.T) {
 	t.Setenv("WEBGUARD_JOB_LEASES_DUAL_WRITE", "")
 	t.Setenv("WEBGUARD_JOB_LEASE_MAX_BATCH", "")
 	t.Setenv("WEBGUARD_ALLOW_PRIVATE_TARGETS", "")
+	t.Setenv("SHUTDOWN_DRAIN_TIMEOUT_SECONDS", "")
 
 	cfg := FromEnv()
 
@@ -36,6 +40,9 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.JobLeaseMaxBatch != 3 {
 		t.Fatalf("expected default lease batch size 3, got %d", cfg.JobLeaseMaxBatch)
 	}
+	if cfg.ShutdownDrainTimeout != 10*time.Second {
+		t.Fatalf("expected 10 second shutdown drain timeout, got %s", cfg.ShutdownDrainTimeout)
+	}
 }
 
 func TestFromEnvCustomValues(t *testing.T) {
@@ -51,6 +58,7 @@ func TestFromEnvCustomValues(t *testing.T) {
 	t.Setenv("WEBGUARD_JOB_LEASES_DUAL_WRITE", "true")
 	t.Setenv("WEBGUARD_JOB_LEASE_MAX_BATCH", "9")
 	t.Setenv("WEBGUARD_ALLOW_PRIVATE_TARGETS", "true")
+	t.Setenv("SHUTDOWN_DRAIN_TIMEOUT_SECONDS", "12")
 
 	cfg := FromEnv()
 
@@ -83,5 +91,35 @@ func TestFromEnvCustomValues(t *testing.T) {
 	}
 	if cfg.JobLeaseMaxBatch != 9 {
 		t.Fatalf("expected lease batch size 9, got %d", cfg.JobLeaseMaxBatch)
+	}
+	if cfg.ShutdownDrainTimeout != 12*time.Second {
+		t.Fatalf("expected 12 second shutdown drain timeout, got %s", cfg.ShutdownDrainTimeout)
+	}
+}
+
+func TestConfigReadinessRequiresCoreConfigurationAndLeaseIdentity(t *testing.T) {
+	t.Parallel()
+
+	ready := Config{WebGuardCoreAPIKey: "key", WebGuardCoreAPIURL: "https://core.example.test", WebGuardLocation: "de-1"}
+	if !ready.IsReady() {
+		t.Fatal("expected legacy configuration to be ready")
+	}
+	if (Config{WebGuardCoreAPIKey: "key", WebGuardLocation: "de-1"}).IsReady() {
+		t.Fatal("expected missing Core URL to be unready")
+	}
+	ready.JobLeasesEnabled = true
+	if ready.IsReady() {
+		t.Fatal("expected lease configuration without an instance ID to be unready")
+	}
+	ready.WebGuardInstanceID = "worker-de-1-a"
+	if !ready.IsReady() {
+		t.Fatal("expected complete lease configuration to be ready")
+	}
+}
+
+func TestFromEnvClampsShutdownDrainTimeout(t *testing.T) {
+	t.Setenv("SHUTDOWN_DRAIN_TIMEOUT_SECONDS", "0")
+	if cfg := FromEnv(); cfg.ShutdownDrainTimeout != time.Second {
+		t.Fatalf("expected one second minimum drain timeout, got %s", cfg.ShutdownDrainTimeout)
 	}
 }

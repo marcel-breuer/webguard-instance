@@ -29,6 +29,10 @@ func (r *MonitoringService) runClaimedJobs(ctx context.Context) error {
 	}
 
 	r.logger.Printf("Claimed %d monitoring jobs.", len(jobs))
+	for range jobs {
+		r.telemetry.RecordLease("claimed")
+		r.telemetry.QueueJob()
+	}
 	queue := make(chan monitor.ClaimedJob)
 	var workers sync.WaitGroup
 	for i := 0; i < min(max(1, r.cfg.QueueDefaultWorkers), len(jobs)); i++ {
@@ -54,31 +58,52 @@ func (r *MonitoringService) leaseCapabilities() []string {
 
 func (r *MonitoringService) runClaimedJob(ctx context.Context, job monitor.ClaimedJob) {
 	if !job.LeaseExpiresAt.IsZero() && !job.LeaseExpiresAt.After(time.Now()) {
+		r.telemetry.DropQueuedJob(leaseMetricPhase(job.Phase), "released")
 		r.releaseClaimedJob(ctx, job, "lease expired before execution")
 		return
 	}
 	phase := ExecutionPhase(strings.TrimSpace(job.Phase))
 	if !isLeasePhase(phase) || !r.executors.Supports(phase, job.Monitoring.Type) {
+		r.telemetry.DropQueuedJob(leaseMetricPhase(job.Phase), "released")
 		r.releaseClaimedJob(ctx, job, "unsupported monitoring job")
 		return
 	}
+	r.telemetry.StartJob()
 	if job.Monitoring.MaintenanceActive {
 		r.completeClaimedJob(ctx, job, maintenanceExecution(phase, job.Monitoring.ID))
+		r.telemetry.FinishJob(string(phase), "maintenance")
 		return
 	}
 
 	release, err := application.AcquireExecutionSlot(ctx)
 	if err != nil {
 		r.releaseClaimedJob(ctx, job, fmt.Sprintf("execution canceled: %v", err))
+		r.telemetry.FinishJob(string(phase), "released")
 		return
 	}
 	execution, _ := r.executors.Execute(ctx, phase, job.Monitoring)
 	release()
 	r.completeClaimedJob(ctx, job, execution)
+	outcome := executionOutcome(execution)
+	r.telemetry.FinishJob(string(phase), outcome)
+	r.logger.Printf("run_id=%s job_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), job.ID, job.Monitoring.ID, phase, outcome)
 }
 
 func isLeasePhase(phase ExecutionPhase) bool {
 	return phase == PhaseResponse || phase == PhaseSSL || phase == PhaseDomainExpiration
+}
+
+func leaseMetricPhase(phase string) string {
+	switch ExecutionPhase(strings.TrimSpace(phase)) {
+	case PhaseResponse:
+		return string(PhaseResponse)
+	case PhaseSSL:
+		return string(PhaseSSL)
+	case PhaseDomainExpiration:
+		return string(PhaseDomainExpiration)
+	default:
+		return "unknown"
+	}
 }
 
 func (r *MonitoringService) completeClaimedJob(ctx context.Context, job monitor.ClaimedJob, execution Execution) {
@@ -92,7 +117,12 @@ func (r *MonitoringService) completeClaimedJob(ctx context.Context, job monitor.
 	})
 	if err != nil {
 		r.logger.Printf("Failed to complete monitoring job (job_id=%s monitoring_id=%s): %v", job.ID, job.Monitoring.ID, err)
+		return
 	}
+	if job.Attempt > 1 {
+		r.telemetry.RecordLease("retry")
+	}
+	r.telemetry.RecordLease("completed")
 }
 
 func (r *MonitoringService) releaseClaimedJob(ctx context.Context, job monitor.ClaimedJob, reason string) {
@@ -101,9 +131,30 @@ func (r *MonitoringService) releaseClaimedJob(ctx context.Context, job monitor.C
 		Reason:  reason,
 	}); err != nil {
 		r.logger.Printf("Failed to release monitoring job (job_id=%s): %v", job.ID, err)
+		return
 	}
+	r.telemetry.RecordLease("released")
 }
 
 func (e Execution) jobResult() monitor.JobResult {
 	return monitor.JobResult{Response: e.Response, SSL: e.SSL, Domain: e.Domain}
+}
+
+func executionOutcome(execution Execution) string {
+	if execution.Response != nil {
+		return string(execution.Response.Status)
+	}
+	if execution.SSL != nil {
+		if execution.SSL.IsValid {
+			return "up"
+		}
+		return "down"
+	}
+	if execution.Domain != nil {
+		if execution.Domain.IsValid {
+			return "up"
+		}
+		return "down"
+	}
+	return "unknown"
 }

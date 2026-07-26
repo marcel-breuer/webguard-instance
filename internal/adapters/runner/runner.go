@@ -62,11 +62,19 @@ type MonitoringService struct {
 	pingExecutor PingCommandExecutor
 	httpChecker  HTTPChecker
 	executors    *executorRegistry
+	telemetry    *application.Telemetry
 }
 
 func New(client application.MonitoringGateway, cfg config.Config, logger *log.Logger) *MonitoringService {
+	return NewWithTelemetry(client, cfg, logger, application.NewTelemetry())
+}
+
+func NewWithTelemetry(client application.MonitoringGateway, cfg config.Config, logger *log.Logger, telemetry *application.Telemetry) *MonitoringService {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
+	}
+	if telemetry == nil {
+		telemetry = application.NewTelemetry()
 	}
 	service := &MonitoringService{
 		client:       client,
@@ -75,6 +83,7 @@ func New(client application.MonitoringGateway, cfg config.Config, logger *log.Lo
 		domainLookup: domainlookup.New(10 * time.Second),
 		dnsChecker:   NewDNSRecordChecker(nil, logger),
 		pingExecutor: runPingCommand,
+		telemetry:    telemetry,
 	}
 	service.httpChecker = HTTPCheckFunc(service.performHTTPRequest)
 	service.executors = service.newExecutorRegistry()
@@ -115,6 +124,7 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 				}
 				execution, _ := r.executors.Execute(ctx, PhaseResponse, monitoring)
 				release()
+				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseResponse, executionOutcome(execution))
 				r.logger.Printf(
 					"Response monitoring result computed (monitoring_id=%s type=%s %s)",
 					monitoring.ID,
@@ -194,6 +204,7 @@ func (r *MonitoringService) runSSL(ctx context.Context) error {
 				}
 				execution, _ := r.executors.Execute(ctx, PhaseSSL, monitoring)
 				release()
+				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseSSL, executionOutcome(execution))
 				r.publishExecution(ctx, execution)
 			}
 		}()
@@ -265,6 +276,7 @@ func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 				}
 				execution, _ := r.executors.Execute(ctx, PhaseDomainExpiration, monitoring)
 				release()
+				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseDomainExpiration, executionOutcome(execution))
 				r.logger.Printf(
 					"Domain expiration monitoring result computed (monitoring_id=%s %s)",
 					monitoring.ID,

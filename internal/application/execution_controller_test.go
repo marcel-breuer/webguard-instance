@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type blockingRunner struct {
@@ -55,5 +56,39 @@ func TestAcquireExecutionSlotHonorsCancellation(t *testing.T) {
 	_, err := AcquireExecutionSlot(withExecutionLimiter(ctx, limiter))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
+	}
+}
+
+func TestExecutionControllerDrainStopsNewRunsAndWaitsForActiveRun(t *testing.T) {
+	t.Parallel()
+	runner := &blockingRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	controller := NewExecutionController(runner, nil, 1)
+	done := make(chan error, 1)
+	go func() { done <- controller.RunMonitoring(context.Background()) }()
+	<-runner.started
+
+	controller.BeginDrain()
+	if !controller.IsDraining() || !controller.IsActive() {
+		t.Fatal("expected an active draining controller")
+	}
+	notIdleContext, cancelNotIdle := context.WithCancel(context.Background())
+	cancelNotIdle()
+	if controller.WaitForIdle(notIdleContext) {
+		t.Fatal("expected active run not to be idle")
+	}
+	if err := controller.RunMonitoring(context.Background()); err != nil {
+		t.Fatalf("unexpected draining run error: %v", err)
+	}
+	if !controller.LastSummary().Skipped {
+		t.Fatal("expected run to be skipped during drain")
+	}
+	close(runner.release)
+	if err := <-done; err != nil {
+		t.Fatalf("unexpected active run error: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if !controller.WaitForIdle(ctx) || controller.IsActive() {
+		t.Fatal("expected controller to become idle after active run completes")
 	}
 }
