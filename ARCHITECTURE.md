@@ -39,7 +39,7 @@ statuses, and result payloads. These types do not depend on transports.
 
 - `adapters/coreapi` implements the WebGuard Core HTTP client.
 - `adapters/health` provides liveness HTTP handlers and graceful server
-  shutdown.
+  shutdown, readiness, and a Prometheus-compatible operations endpoint.
 - `adapters/runner` registers independent HTTP, keyword, ping, TCP, DNS, TLS,
   and domain-expiry executors. Each executor produces normalized result
   payloads, which the shared publisher sends to Core.
@@ -56,3 +56,9 @@ owns only execution and completion or release of its claimed jobs.
 
 The exact boundary and staged deployment plan are documented in
 [JOB_LEASE_PROTOCOL.md](JOB_LEASE_PROTOCOL.md).
+
+`application.Telemetry` is a bounded process-local telemetry boundary shared by
+the controller, runner, and Core client. It contains only operation, phase, and
+outcome dimensions; HTTP and monitoring adapters must never add target URLs,
+credentials, or monitoring/job IDs as metric labels. The composition root
+drains the controller on termination before closing the operations server.

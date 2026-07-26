@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -12,33 +13,43 @@ type Config struct {
 	WebGuardLocation   string
 	WebGuardInstanceID string
 
-	QueueDefaultWorkers int
-	RunMaxConcurrency   int
-	JobLeasesEnabled    bool
-	JobLeasesDualWrite  bool
-	JobLeaseMaxBatch    int
-	AllowPrivateTargets bool
+	QueueDefaultWorkers  int
+	RunMaxConcurrency    int
+	JobLeasesEnabled     bool
+	JobLeasesDualWrite   bool
+	JobLeaseMaxBatch     int
+	AllowPrivateTargets  bool
+	ShutdownDrainTimeout time.Duration
 
 	Address string
 }
 
 func FromEnv() Config {
 	port := env("PORT", "8080")
+	drainTimeoutSeconds := max(1, envInt("SHUTDOWN_DRAIN_TIMEOUT_SECONDS", 10))
 	return Config{
 		WebGuardCoreAPIKey: env("WEBGUARD_CORE_API_KEY", ""),
 		WebGuardCoreAPIURL: env("WEBGUARD_CORE_API_URL", ""),
 		WebGuardLocation:   env("WEBGUARD_LOCATION", ""),
 		WebGuardInstanceID: env("WEBGUARD_INSTANCE_ID", ""),
 
-		QueueDefaultWorkers: envInt("QUEUE_DEFAULT_WORKERS", 3),
-		RunMaxConcurrency:   envInt("RUN_MAX_CONCURRENCY", envInt("QUEUE_DEFAULT_WORKERS", 3)),
-		JobLeasesEnabled:    envBool("WEBGUARD_JOB_LEASES_ENABLED", false),
-		JobLeasesDualWrite:  envBool("WEBGUARD_JOB_LEASES_DUAL_WRITE", false),
-		JobLeaseMaxBatch:    envInt("WEBGUARD_JOB_LEASE_MAX_BATCH", envInt("QUEUE_DEFAULT_WORKERS", 3)),
-		AllowPrivateTargets: envBool("WEBGUARD_ALLOW_PRIVATE_TARGETS", false),
+		QueueDefaultWorkers:  envInt("QUEUE_DEFAULT_WORKERS", 3),
+		RunMaxConcurrency:    envInt("RUN_MAX_CONCURRENCY", envInt("QUEUE_DEFAULT_WORKERS", 3)),
+		JobLeasesEnabled:     envBool("WEBGUARD_JOB_LEASES_ENABLED", false),
+		JobLeasesDualWrite:   envBool("WEBGUARD_JOB_LEASES_DUAL_WRITE", false),
+		JobLeaseMaxBatch:     envInt("WEBGUARD_JOB_LEASE_MAX_BATCH", envInt("QUEUE_DEFAULT_WORKERS", 3)),
+		AllowPrivateTargets:  envBool("WEBGUARD_ALLOW_PRIVATE_TARGETS", false),
+		ShutdownDrainTimeout: time.Duration(drainTimeoutSeconds) * time.Second,
 
 		Address: env("BIND_ADDRESS", ":"+port),
 	}
+}
+
+func (c Config) IsReady() bool {
+	if strings.TrimSpace(c.WebGuardCoreAPIKey) == "" || strings.TrimSpace(c.WebGuardCoreAPIURL) == "" || strings.TrimSpace(c.WebGuardLocation) == "" {
+		return false
+	}
+	return !c.JobLeasesEnabled || strings.TrimSpace(c.WebGuardInstanceID) != ""
 }
 
 func env(key, fallback string) string {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marcel-breuer/webguard-instance/internal/application"
 	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
@@ -21,6 +22,7 @@ type Client struct {
 	apiKey       string
 	instanceCode string
 	httpClient   *http.Client
+	telemetry    *application.Telemetry
 }
 
 type HTTPStatusError struct {
@@ -48,6 +50,10 @@ func (c *Client) SetHTTPClient(httpClient *http.Client) {
 		return
 	}
 	c.httpClient = httpClient
+}
+
+func (c *Client) SetTelemetry(telemetry *application.Telemetry) {
+	c.telemetry = telemetry
 }
 
 func (c *Client) GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error) {
@@ -105,7 +111,7 @@ func (c *Client) getMonitorings(ctx context.Context, location string, monitoring
 	}
 
 	var monitorings []monitor.Monitoring
-	if err := c.doJSON(request, &monitorings); err != nil {
+	if err := c.doJSON(request, &monitorings, "get_monitorings"); err != nil {
 		return nil, err
 	}
 	return monitorings, nil
@@ -117,7 +123,7 @@ func (c *Client) PostMonitoringResponse(ctx context.Context, payload monitor.Mon
 		return err
 	}
 
-	return c.doJSON(request, nil)
+	return c.doJSON(request, nil, "post_monitoring_response")
 }
 
 func (c *Client) PostSSLResult(ctx context.Context, payload monitor.SSLResultPayload) error {
@@ -126,7 +132,7 @@ func (c *Client) PostSSLResult(ctx context.Context, payload monitor.SSLResultPay
 		return err
 	}
 
-	return c.doJSON(request, nil)
+	return c.doJSON(request, nil, "post_ssl_result")
 }
 
 func (c *Client) PostDomainResult(ctx context.Context, payload monitor.DomainResultPayload) error {
@@ -135,7 +141,7 @@ func (c *Client) PostDomainResult(ctx context.Context, payload monitor.DomainRes
 		return err
 	}
 
-	return c.doJSON(request, nil)
+	return c.doJSON(request, nil, "post_domain_result")
 }
 
 func (c *Client) ClaimMonitoringJobs(ctx context.Context, payload monitor.ClaimMonitoringJobsRequest) ([]monitor.ClaimedJob, error) {
@@ -158,7 +164,7 @@ func (c *Client) ClaimMonitoringJobs(ctx context.Context, payload monitor.ClaimM
 	}
 
 	var response monitor.ClaimMonitoringJobsResponse
-	if err := c.doJSON(request, &response); err != nil {
+	if err := c.doJSON(request, &response, "claim_monitoring_jobs"); err != nil {
 		return nil, err
 	}
 	return response.Jobs, nil
@@ -176,7 +182,7 @@ func (c *Client) CompleteMonitoringJob(ctx context.Context, jobID, idempotencyKe
 		return err
 	}
 	request.Header.Set("Idempotency-Key", idempotencyKey)
-	return c.doJSON(request, nil)
+	return c.doJSON(request, nil, "complete_monitoring_job")
 }
 
 func (c *Client) ReleaseMonitoringJob(ctx context.Context, jobID string, payload monitor.ReleaseMonitoringJobRequest) error {
@@ -187,7 +193,7 @@ func (c *Client) ReleaseMonitoringJob(ctx context.Context, jobID string, payload
 	if err != nil {
 		return err
 	}
-	return c.doJSON(request, nil)
+	return c.doJSON(request, nil, "release_monitoring_job")
 }
 
 func (c *Client) ExtendMonitoringJob(ctx context.Context, jobID string, payload monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error) {
@@ -199,7 +205,7 @@ func (c *Client) ExtendMonitoringJob(ctx context.Context, jobID string, payload 
 		return monitor.ExtendMonitoringJobResponse{}, err
 	}
 	var response monitor.ExtendMonitoringJobResponse
-	if err := c.doJSON(request, &response); err != nil {
+	if err := c.doJSON(request, &response, "extend_monitoring_job"); err != nil {
 		return monitor.ExtendMonitoringJobResponse{}, err
 	}
 	return response, nil
@@ -245,7 +251,11 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	return request, nil
 }
 
-func (c *Client) doJSON(request *http.Request, out any) error {
+func (c *Client) doJSON(request *http.Request, out any, operation string) (resultErr error) {
+	startedAt := time.Now()
+	defer func() {
+		c.telemetry.RecordCoreRequest(operation, time.Since(startedAt), resultErr)
+	}()
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return err

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcel-breuer/webguard-instance/internal/application"
 	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
@@ -58,6 +59,26 @@ func TestGetMonitoringsIncludesHeadersAndQuery(t *testing.T) {
 	}
 	if len(monitorings) != 1 {
 		t.Fatalf("expected 1 monitoring, got %d", len(monitorings))
+	}
+}
+
+func TestClientRecordsBoundedCoreRequestTelemetry(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	telemetry := application.NewTelemetry()
+	client := NewClient(server.URL, "secret-key", "de-1")
+	client.SetTelemetry(telemetry)
+	_, err := client.GetMonitorings(context.Background(), "de-1", nil)
+	if err == nil {
+		t.Fatal("expected Core request failure")
+	}
+	metric := telemetry.Snapshot().Core["get_monitorings"]
+	if metric.Count != 1 || metric.Errors != 1 || metric.Duration < 0 {
+		t.Fatalf("unexpected Core telemetry: %#v", metric)
 	}
 }
 
