@@ -27,7 +27,7 @@ func main() {
 	logger := log.New(os.Stdout, "", 0)
 	cfg := config.FromEnv()
 	telemetry := application.NewTelemetry()
-	coreClient := coreapi.NewClient(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation)
+	coreClient := coreapi.NewClientWithInstanceAPIPath(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation, cfg.WebGuardInstanceAPIBasePath)
 	coreClient.SetTelemetry(telemetry)
 	service := application.NewExecutionControllerWithTelemetry(runner.NewWithTelemetry(coreClient, cfg, logger, telemetry), logger, cfg.RunMaxConcurrency, telemetry)
 

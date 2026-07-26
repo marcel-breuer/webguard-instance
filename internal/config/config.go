@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	WebGuardCoreAPIKey string
-	WebGuardCoreAPIURL string
-	WebGuardLocation   string
-	WebGuardInstanceID string
+	WebGuardCoreAPIKey          string
+	WebGuardCoreAPIURL          string
+	WebGuardInstanceAPIBasePath string
+	WebGuardLocation            string
+	WebGuardInstanceID          string
 
 	QueueDefaultWorkers  int
 	RunMaxConcurrency    int
@@ -28,10 +29,11 @@ func FromEnv() Config {
 	port := env("PORT", "8080")
 	drainTimeoutSeconds := max(1, envInt("SHUTDOWN_DRAIN_TIMEOUT_SECONDS", 10))
 	return Config{
-		WebGuardCoreAPIKey: env("WEBGUARD_CORE_API_KEY", ""),
-		WebGuardCoreAPIURL: env("WEBGUARD_CORE_API_URL", ""),
-		WebGuardLocation:   env("WEBGUARD_LOCATION", ""),
-		WebGuardInstanceID: env("WEBGUARD_INSTANCE_ID", ""),
+		WebGuardCoreAPIKey:          env("WEBGUARD_CORE_API_KEY", ""),
+		WebGuardCoreAPIURL:          env("WEBGUARD_CORE_API_URL", ""),
+		WebGuardInstanceAPIBasePath: env("WEBGUARD_INSTANCE_API_BASE_PATH", "/api/v1/internal/instances"),
+		WebGuardLocation:            env("WEBGUARD_LOCATION", ""),
+		WebGuardInstanceID:          env("WEBGUARD_INSTANCE_ID", ""),
 
 		QueueDefaultWorkers:  envInt("QUEUE_DEFAULT_WORKERS", 3),
 		RunMaxConcurrency:    envInt("RUN_MAX_CONCURRENCY", envInt("QUEUE_DEFAULT_WORKERS", 3)),
@@ -49,7 +51,15 @@ func (c Config) IsReady() bool {
 	if strings.TrimSpace(c.WebGuardCoreAPIKey) == "" || strings.TrimSpace(c.WebGuardCoreAPIURL) == "" || strings.TrimSpace(c.WebGuardLocation) == "" {
 		return false
 	}
+	if !isSupportedInstanceAPIBasePath(c.WebGuardInstanceAPIBasePath) {
+		return false
+	}
 	return !c.JobLeasesEnabled || strings.TrimSpace(c.WebGuardInstanceID) != ""
+}
+
+func isSupportedInstanceAPIBasePath(path string) bool {
+	normalized := "/" + strings.Trim(strings.TrimSpace(path), "/")
+	return normalized == "/api/v1/internal/instances" || normalized == "/api/v1/internal"
 }
 
 func env(key, fallback string) string {

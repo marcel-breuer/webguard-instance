@@ -2,7 +2,7 @@
 
 This protocol lets multiple WebGuard Instances serve the same location without
 deliberately executing one active monitoring job twice. It is versioned by its
-`/api/v1/internal` path and is opt-in in the instance through
+Core instance-contract `v1` path and is opt-in in the instance through
 `WEBGUARD_JOB_LEASES_ENABLED`.
 
 ## Core contract
@@ -13,10 +13,10 @@ the location code.
 
 | Operation | Endpoint | Worker request | Core response or effect |
 | --- | --- | --- | --- |
-| Claim | `POST /api/v1/internal/monitoring-jobs/claim` | `location`, `instance_id`, `capabilities`, `capacity`, `max_batch_size` | `jobs`, each with `job_id`, `phase`, `lease_expires_at`, `attempt`, `idempotency_key`, and a monitoring snapshot |
-| Complete | `POST /api/v1/internal/monitoring-jobs/{job_id}/complete` | `attempt` and one normalized `result` | Completes the lease and records the result once for the `Idempotency-Key` header |
-| Extend | `POST /api/v1/internal/monitoring-jobs/{job_id}/extend` | `attempt` | Returns the new `lease_expires_at` when a long-running check needs more time |
-| Release | `POST /api/v1/internal/monitoring-jobs/{job_id}/release` | `attempt` and a machine-readable reason | Makes a job eligible for later placement without recording a result |
+| Claim | `POST {instance API base path}/monitoring-jobs/claim` | `location`, `instance_id`, `capabilities`, `capacity`, `max_batch_size` | `jobs`, each with `job_id`, `phase`, `lease_expires_at`, `attempt`, `idempotency_key`, and a monitoring snapshot |
+| Complete | `POST {instance API base path}/monitoring-jobs/{job_id}/complete` | `attempt` and one normalized `result` | Completes the lease and records the result once for the `Idempotency-Key` header |
+| Extend | `POST {instance API base path}/monitoring-jobs/{job_id}/extend` | `attempt` | Returns the new `lease_expires_at` when a long-running check needs more time |
+| Release | `POST {instance API base path}/monitoring-jobs/{job_id}/release` | `attempt` and a machine-readable reason | Makes a job eligible for later placement without recording a result |
 
 `phase` is one of `response`, `ssl`, or `domain_expiration`. This makes the
 existing response and certificate checks for one monitoring separate schedulable
