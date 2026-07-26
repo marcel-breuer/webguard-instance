@@ -1,4 +1,4 @@
-package core
+package coreapi
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marcel-breuer/webguard-instance/internal/monitor"
+	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
 const maxResponseBodyBytes = 4 << 20

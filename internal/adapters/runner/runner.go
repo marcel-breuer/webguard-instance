@@ -20,11 +20,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/coreapi"
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/domainlookup"
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/target"
+	"github.com/marcel-breuer/webguard-instance/internal/application"
 	"github.com/marcel-breuer/webguard-instance/internal/config"
-	"github.com/marcel-breuer/webguard-instance/internal/core"
-	"github.com/marcel-breuer/webguard-instance/internal/domainlookup"
-	"github.com/marcel-breuer/webguard-instance/internal/monitor"
-	"github.com/marcel-breuer/webguard-instance/internal/target"
+	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
 const fixedHTTPRetryTimes = 1
@@ -56,30 +57,23 @@ var domainExpirationMonitoringTypes = []monitor.Type{
 	monitor.TypeDomainExpiration,
 }
 
-type CoreClient interface {
-	GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error)
-	PostMonitoringResponse(ctx context.Context, payload monitor.MonitoringResponsePayload) error
-	PostSSLResult(ctx context.Context, payload monitor.SSLResultPayload) error
-	PostDomainResult(ctx context.Context, payload monitor.DomainResultPayload) error
-}
-
 type DomainLookup interface {
 	Lookup(ctx context.Context, target string) (domainlookup.Result, error)
 }
 
-type Runner struct {
-	client       CoreClient
+type MonitoringService struct {
+	client       application.MonitoringGateway
 	cfg          config.Config
 	logger       *log.Logger
 	domainLookup DomainLookup
 	dnsChecker   *DNSRecordChecker
 }
 
-func New(client CoreClient, cfg config.Config, logger *log.Logger) *Runner {
+func New(client application.MonitoringGateway, cfg config.Config, logger *log.Logger) *MonitoringService {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &Runner{
+	return &MonitoringService{
 		client:       client,
 		cfg:          cfg,
 		logger:       logger,
@@ -88,7 +82,7 @@ func New(client CoreClient, cfg config.Config, logger *log.Logger) *Runner {
 	}
 }
 
-func (r *Runner) runResponse(ctx context.Context) error {
+func (r *MonitoringService) runResponse(ctx context.Context) error {
 	r.logger.Println("Dispatching response monitoring jobs...")
 
 	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, responseMonitoringTypes)
@@ -177,7 +171,7 @@ func (r *Runner) runResponse(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) runSSL(ctx context.Context) error {
+func (r *MonitoringService) runSSL(ctx context.Context) error {
 	r.logger.Println("Dispatching SSL monitoring jobs...")
 
 	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, sslMonitoringTypes)
@@ -244,7 +238,7 @@ func (r *Runner) runSSL(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) runDomainExpiration(ctx context.Context) error {
+func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 	r.logger.Println("Dispatching domain expiration monitoring jobs...")
 
 	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, domainExpirationMonitoringTypes)
@@ -335,56 +329,39 @@ func (r *Runner) runDomainExpiration(ctx context.Context) error {
 	return nil
 }
 
-func (r *Runner) RunMonitoring(ctx context.Context) error {
+func (r *MonitoringService) RunMonitoring(ctx context.Context) error {
 	r.logger.Println("Dispatching all monitoring jobs...")
 
-	type phaseResult struct {
-		name string
-		err  error
-	}
-
-	results := make(chan phaseResult, 3)
-	var phases sync.WaitGroup
-	phases.Add(3)
-
-	go func() {
-		defer phases.Done()
-		results <- phaseResult{name: "response", err: r.runResponse(ctx)}
-	}()
-
-	go func() {
-		defer phases.Done()
-		results <- phaseResult{name: "SSL", err: r.runSSL(ctx)}
-	}()
-
-	go func() {
-		defer phases.Done()
-		results <- phaseResult{name: "domain expiration", err: r.runDomainExpiration(ctx)}
-	}()
-
-	phases.Wait()
-	close(results)
-
-	for result := range results {
-		if result.err != nil {
-			r.logger.Printf("%s monitoring phase failed: %v", result.name, result.err)
-		}
-	}
-
-	r.logger.Println("All monitoring jobs have been dispatched successfully.")
-	return nil
+	return application.NewCoordinator(r.logger,
+		monitoringPhase{name: "response", run: r.runResponse},
+		monitoringPhase{name: "SSL", run: r.runSSL},
+		monitoringPhase{name: "domain expiration", run: r.runDomainExpiration},
+	).Run(ctx)
 }
 
-func (r *Runner) logFetchError(err error) {
+type monitoringPhase struct {
+	name string
+	run  func(context.Context) error
+}
+
+func (p monitoringPhase) Name() string {
+	return p.name
+}
+
+func (p monitoringPhase) Run(ctx context.Context) error {
+	return p.run(ctx)
+}
+
+func (r *MonitoringService) logFetchError(err error) {
 	r.logger.Println("Failed to fetch monitorings from the Core API.")
 
-	var statusError *core.HTTPStatusError
+	var statusError *coreapi.HTTPStatusError
 	if errors.As(err, &statusError) && strings.TrimSpace(statusError.Body) != "" {
 		r.logger.Println(statusError.Body)
 	}
 }
 
-func (r *Runner) crawlResponseMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
+func (r *MonitoringService) crawlResponseMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	switch monitoring.Type {
 	case monitor.TypeHTTP:
 		return r.handleHTTPMonitoring(ctx, monitoring)
@@ -428,7 +405,7 @@ func supportsSSLChecks(monitoringType monitor.Type) bool {
 	}
 }
 
-func (r *Runner) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
+func (r *MonitoringService) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	start := time.Now()
 	statusCode, _, err := r.performHTTPRequest(ctx, monitoring)
 	if err != nil {
@@ -442,7 +419,7 @@ func (r *Runner) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Mo
 	return monitor.StatusDown, nil, httpStatusCode
 }
 
-func (r *Runner) handleKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
+func (r *MonitoringService) handleKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	start := time.Now()
 	statusCode, body, err := r.performHTTPRequest(ctx, monitoring)
 	if err != nil {
@@ -456,7 +433,7 @@ func (r *Runner) handleKeywordMonitoring(ctx context.Context, monitoring monitor
 	return monitor.StatusDown, nil, httpStatusCode
 }
 
-func (r *Runner) egressPolicy() target.EgressPolicy {
+func (r *MonitoringService) egressPolicy() target.EgressPolicy {
 	return target.EgressPolicy{AllowPrivate: r.cfg.AllowPrivateTargets}
 }
 
@@ -554,7 +531,7 @@ func handlePortMonitoring(ctx context.Context, monitoring monitor.Monitoring, po
 	return monitor.StatusUp, &responseTime
 }
 
-func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
+func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
 	targetURL, err := target.HTTPURL(ctx, monitoring.Target, r.egressPolicy())
 	if err != nil {
 		return 0, "", err
@@ -639,7 +616,7 @@ func (r *Runner) performHTTPRequest(ctx context.Context, monitoring monitor.Moni
 	return 0, "", lastErr
 }
 
-func (r *Runner) crawlMonitoringSSL(ctx context.Context, monitoring monitor.Monitoring) monitor.SSLResultPayload {
+func (r *MonitoringService) crawlMonitoringSSL(ctx context.Context, monitoring monitor.Monitoring) monitor.SSLResultPayload {
 	payload := monitor.SSLResultPayload{
 		MonitoringID: monitoring.ID,
 		IsValid:      false,
@@ -695,7 +672,7 @@ func (r *Runner) crawlMonitoringSSL(ctx context.Context, monitoring monitor.Moni
 	return payload
 }
 
-func (r *Runner) crawlDomainExpiration(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, monitor.DomainResultPayload, bool) {
+func (r *MonitoringService) crawlDomainExpiration(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, monitor.DomainResultPayload, bool) {
 	lookup := r.domainLookup
 	if lookup == nil {
 		lookup = domainlookup.New(10 * time.Second)

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/marcel-breuer/webguard-instance/internal/config"
-	"github.com/marcel-breuer/webguard-instance/internal/monitor"
+	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
 type getMonitoringsCall struct {
