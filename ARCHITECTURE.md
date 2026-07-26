@@ -46,5 +46,6 @@ statuses, and result payloads. These types do not depend on transports.
 - `adapters/domainlookup` and `adapters/target` isolate RDAP/WHOIS and
   egress-policy details.
 
-The next migration step is a bounded execution controller that applies global
-and per-executor concurrency limits without changing the Core API contract.
+`application.ExecutionController` prevents overlapping local runs and applies
+one shared concurrency limit across all executor phases. The next migration
+step is the Core lease protocol for safe horizontal scaling across instances.
