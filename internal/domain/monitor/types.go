@@ -194,6 +194,56 @@ type DomainResultPayload struct {
 	CheckedAt    time.Time  `json:"checked_at"`
 }
 
+// ClaimedJob is one unit of monitoring work that Core has leased to this
+// instance. The phase makes jobs for the same monitoring explicit so response
+// and certificate checks can be scheduled independently.
+type ClaimedJob struct {
+	ID             string     `json:"job_id"`
+	Phase          string     `json:"phase"`
+	LeaseExpiresAt time.Time  `json:"lease_expires_at"`
+	Attempt        int        `json:"attempt"`
+	IdempotencyKey string     `json:"idempotency_key"`
+	Monitoring     Monitoring `json:"monitoring"`
+}
+
+type ClaimMonitoringJobsRequest struct {
+	Location     string   `json:"location"`
+	InstanceID   string   `json:"instance_id"`
+	Capabilities []string `json:"capabilities"`
+	Capacity     int      `json:"capacity"`
+	MaxBatchSize int      `json:"max_batch_size"`
+}
+
+type ClaimMonitoringJobsResponse struct {
+	Jobs []ClaimedJob `json:"jobs"`
+}
+
+// JobResult is the normalized output of a leased job. Exactly one result
+// field is populated for a successfully executed job.
+type JobResult struct {
+	Response *MonitoringResponsePayload `json:"response,omitempty"`
+	SSL      *SSLResultPayload          `json:"ssl,omitempty"`
+	Domain   *DomainResultPayload       `json:"domain,omitempty"`
+}
+
+type CompleteMonitoringJobRequest struct {
+	Attempt int       `json:"attempt"`
+	Result  JobResult `json:"result"`
+}
+
+type ReleaseMonitoringJobRequest struct {
+	Attempt int    `json:"attempt"`
+	Reason  string `json:"reason"`
+}
+
+type ExtendMonitoringJobRequest struct {
+	Attempt int `json:"attempt"`
+}
+
+type ExtendMonitoringJobResponse struct {
+	LeaseExpiresAt time.Time `json:"lease_expires_at"`
+}
+
 func parseStringFlexible(value any, field string) (string, error) {
 	switch typed := value.(type) {
 	case nil:

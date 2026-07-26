@@ -34,6 +34,21 @@ type fakeCoreClient struct {
 	postedResponses []monitor.MonitoringResponsePayload
 	postedSSL       []monitor.SSLResultPayload
 	postedDomains   []monitor.DomainResultPayload
+	claimedJobs     []monitor.ClaimedJob
+	claimRequests   []monitor.ClaimMonitoringJobsRequest
+	completedJobs   []completedJob
+	releasedJobs    []releasedJob
+}
+
+type completedJob struct {
+	jobID          string
+	idempotencyKey string
+	request        monitor.CompleteMonitoringJobRequest
+}
+
+type releasedJob struct {
+	jobID   string
+	request monitor.ReleaseMonitoringJobRequest
 }
 
 func (f *fakeCoreClient) GetMonitorings(_ context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error) {
@@ -75,6 +90,31 @@ func (f *fakeCoreClient) PostDomainResult(_ context.Context, payload monitor.Dom
 	return nil
 }
 
+func (f *fakeCoreClient) ClaimMonitoringJobs(_ context.Context, request monitor.ClaimMonitoringJobsRequest) ([]monitor.ClaimedJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimRequests = append(f.claimRequests, request)
+	return append([]monitor.ClaimedJob(nil), f.claimedJobs...), nil
+}
+
+func (f *fakeCoreClient) CompleteMonitoringJob(_ context.Context, jobID, idempotencyKey string, request monitor.CompleteMonitoringJobRequest) error {
+	f.mu.Lock()
+	f.completedJobs = append(f.completedJobs, completedJob{jobID: jobID, idempotencyKey: idempotencyKey, request: request})
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeCoreClient) ReleaseMonitoringJob(_ context.Context, jobID string, request monitor.ReleaseMonitoringJobRequest) error {
+	f.mu.Lock()
+	f.releasedJobs = append(f.releasedJobs, releasedJob{jobID: jobID, request: request})
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeCoreClient) ExtendMonitoringJob(_ context.Context, _ string, _ monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error) {
+	return monitor.ExtendMonitoringJobResponse{}, nil
+}
+
 func (f *fakeCoreClient) snapshotCalls() []getMonitoringsCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -97,6 +137,114 @@ func (f *fakeCoreClient) snapshotPostedDomains() []monitor.DomainResultPayload {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]monitor.DomainResultPayload(nil), f.postedDomains...)
+}
+
+func (f *fakeCoreClient) snapshotClaimRequests() []monitor.ClaimMonitoringJobsRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]monitor.ClaimMonitoringJobsRequest(nil), f.claimRequests...)
+}
+
+func (f *fakeCoreClient) snapshotCompletedJobs() []completedJob {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]completedJob(nil), f.completedJobs...)
+}
+
+func (f *fakeCoreClient) snapshotReleasedJobs() []releasedJob {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]releasedJob(nil), f.releasedJobs...)
+}
+
+func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{claimedJobs: []monitor.ClaimedJob{
+		{
+			ID:             "job-response",
+			Phase:          string(PhaseResponse),
+			Attempt:        2,
+			IdempotencyKey: "response-key",
+			Monitoring: monitor.Monitoring{
+				ID: "http-1", Type: monitor.TypeHTTP, Target: "https://example.com",
+			},
+		},
+		{
+			ID:             "job-invalid",
+			Phase:          string(PhaseSSL),
+			Attempt:        1,
+			IdempotencyKey: "invalid-key",
+			Monitoring: monitor.Monitoring{
+				ID: "domain-1", Type: monitor.TypeDomainExpiration,
+			},
+		},
+		{
+			ID:             "job-expired",
+			Phase:          string(PhaseResponse),
+			Attempt:        4,
+			IdempotencyKey: "expired-key",
+			LeaseExpiresAt: time.Now().Add(-time.Minute),
+			Monitoring: monitor.Monitoring{
+				ID: "http-expired", Type: monitor.TypeHTTP, Target: "https://example.com",
+			},
+		},
+	}}
+	runner := New(client, config.Config{
+		WebGuardLocation:    "de-1",
+		WebGuardInstanceID:  "worker-de-1-a",
+		JobLeasesEnabled:    true,
+		JobLeaseMaxBatch:    4,
+		QueueDefaultWorkers: 2,
+		AllowPrivateTargets: true,
+	}, log.New(io.Discard, "", 0))
+	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
+		return http.StatusOK, "", nil
+	})
+
+	if err := runner.RunMonitoring(context.Background()); err != nil {
+		t.Fatalf("RunMonitoring failed: %v", err)
+	}
+
+	claims := client.snapshotClaimRequests()
+	if len(claims) != 1 {
+		t.Fatalf("expected one claim request, got %d", len(claims))
+	}
+	if claims[0].Location != "de-1" || claims[0].InstanceID != "worker-de-1-a" {
+		t.Fatalf("unexpected claim identity: %#v", claims[0])
+	}
+	if claims[0].Capacity != 2 || claims[0].MaxBatchSize != 4 {
+		t.Fatalf("unexpected claim capacity: %#v", claims[0])
+	}
+	if !slices.Equal(claims[0].Capabilities, []string{"response", "ssl", "domain_expiration"}) {
+		t.Fatalf("unexpected claim capabilities: %#v", claims[0].Capabilities)
+	}
+
+	completed := client.snapshotCompletedJobs()
+	if len(completed) != 1 {
+		t.Fatalf("expected one completed job, got %d", len(completed))
+	}
+	if completed[0].jobID != "job-response" || completed[0].idempotencyKey != "response-key" || completed[0].request.Attempt != 2 {
+		t.Fatalf("unexpected completion: %#v", completed[0])
+	}
+	if completed[0].request.Result.Response == nil || completed[0].request.Result.Response.MonitoringID != "http-1" {
+		t.Fatalf("expected response result, got %#v", completed[0].request.Result)
+	}
+
+	released := client.snapshotReleasedJobs()
+	if len(released) != 2 {
+		t.Fatalf("unexpected release: %#v", released)
+	}
+	releasedReasons := make(map[string]string, len(released))
+	for _, job := range released {
+		releasedReasons[job.jobID] = job.request.Reason
+	}
+	if releasedReasons["job-invalid"] != "unsupported monitoring job" || releasedReasons["job-expired"] != "lease expired before execution" {
+		t.Fatalf("unexpected release reasons: %#v", releasedReasons)
+	}
+	if len(client.snapshotCalls()) != 0 {
+		t.Fatalf("expected no legacy monitoring fetches when job leases are enabled")
+	}
 }
 
 func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
@@ -432,6 +580,22 @@ func (p *parallelPhasesClient) PostSSLResult(_ context.Context, _ monitor.SSLRes
 
 func (p *parallelPhasesClient) PostDomainResult(_ context.Context, _ monitor.DomainResultPayload) error {
 	return nil
+}
+
+func (p *parallelPhasesClient) ClaimMonitoringJobs(_ context.Context, _ monitor.ClaimMonitoringJobsRequest) ([]monitor.ClaimedJob, error) {
+	return nil, nil
+}
+
+func (p *parallelPhasesClient) CompleteMonitoringJob(_ context.Context, _ string, _ string, _ monitor.CompleteMonitoringJobRequest) error {
+	return nil
+}
+
+func (p *parallelPhasesClient) ReleaseMonitoringJob(_ context.Context, _ string, _ monitor.ReleaseMonitoringJobRequest) error {
+	return nil
+}
+
+func (p *parallelPhasesClient) ExtendMonitoringJob(_ context.Context, _ string, _ monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error) {
+	return monitor.ExtendMonitoringJobResponse{}, nil
 }
 
 func TestRunMonitoringRunsPhasesInParallel(t *testing.T) {

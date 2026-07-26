@@ -8,8 +8,12 @@ func TestFromEnvDefaults(t *testing.T) {
 	t.Setenv("WEBGUARD_CORE_API_KEY", "")
 	t.Setenv("WEBGUARD_CORE_API_URL", "")
 	t.Setenv("WEBGUARD_LOCATION", "")
+	t.Setenv("WEBGUARD_INSTANCE_ID", "")
 	t.Setenv("QUEUE_DEFAULT_WORKERS", "")
 	t.Setenv("RUN_MAX_CONCURRENCY", "")
+	t.Setenv("WEBGUARD_JOB_LEASES_ENABLED", "")
+	t.Setenv("WEBGUARD_JOB_LEASES_DUAL_WRITE", "")
+	t.Setenv("WEBGUARD_JOB_LEASE_MAX_BATCH", "")
 	t.Setenv("WEBGUARD_ALLOW_PRIVATE_TARGETS", "")
 
 	cfg := FromEnv()
@@ -26,6 +30,12 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.AllowPrivateTargets {
 		t.Fatalf("expected private targets to be disabled by default")
 	}
+	if cfg.JobLeasesEnabled || cfg.JobLeasesDualWrite {
+		t.Fatalf("expected job leases to be disabled by default")
+	}
+	if cfg.JobLeaseMaxBatch != 3 {
+		t.Fatalf("expected default lease batch size 3, got %d", cfg.JobLeaseMaxBatch)
+	}
 }
 
 func TestFromEnvCustomValues(t *testing.T) {
@@ -34,8 +44,12 @@ func TestFromEnvCustomValues(t *testing.T) {
 	t.Setenv("WEBGUARD_CORE_API_KEY", "key")
 	t.Setenv("WEBGUARD_CORE_API_URL", "https://core.example.com")
 	t.Setenv("WEBGUARD_LOCATION", "de-1")
+	t.Setenv("WEBGUARD_INSTANCE_ID", "worker-de-1-a")
 	t.Setenv("QUEUE_DEFAULT_WORKERS", "7")
 	t.Setenv("RUN_MAX_CONCURRENCY", "4")
+	t.Setenv("WEBGUARD_JOB_LEASES_ENABLED", "true")
+	t.Setenv("WEBGUARD_JOB_LEASES_DUAL_WRITE", "true")
+	t.Setenv("WEBGUARD_JOB_LEASE_MAX_BATCH", "9")
 	t.Setenv("WEBGUARD_ALLOW_PRIVATE_TARGETS", "true")
 
 	cfg := FromEnv()
@@ -52,6 +66,9 @@ func TestFromEnvCustomValues(t *testing.T) {
 	if cfg.WebGuardLocation != "de-1" {
 		t.Fatalf("unexpected location: %q", cfg.WebGuardLocation)
 	}
+	if cfg.WebGuardInstanceID != "worker-de-1-a" {
+		t.Fatalf("unexpected instance id: %q", cfg.WebGuardInstanceID)
+	}
 	if cfg.QueueDefaultWorkers != 7 {
 		t.Fatalf("expected workers 7, got %d", cfg.QueueDefaultWorkers)
 	}
@@ -60,5 +77,11 @@ func TestFromEnvCustomValues(t *testing.T) {
 	}
 	if !cfg.AllowPrivateTargets {
 		t.Fatalf("expected private targets to be enabled")
+	}
+	if !cfg.JobLeasesEnabled || !cfg.JobLeasesDualWrite {
+		t.Fatalf("expected job leases and dual write to be enabled")
+	}
+	if cfg.JobLeaseMaxBatch != 9 {
+		t.Fatalf("expected lease batch size 9, got %d", cfg.JobLeaseMaxBatch)
 	}
 }

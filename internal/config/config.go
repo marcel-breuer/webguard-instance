@@ -10,9 +10,13 @@ type Config struct {
 	WebGuardCoreAPIKey string
 	WebGuardCoreAPIURL string
 	WebGuardLocation   string
+	WebGuardInstanceID string
 
 	QueueDefaultWorkers int
 	RunMaxConcurrency   int
+	JobLeasesEnabled    bool
+	JobLeasesDualWrite  bool
+	JobLeaseMaxBatch    int
 	AllowPrivateTargets bool
 
 	Address string
@@ -24,9 +28,13 @@ func FromEnv() Config {
 		WebGuardCoreAPIKey: env("WEBGUARD_CORE_API_KEY", ""),
 		WebGuardCoreAPIURL: env("WEBGUARD_CORE_API_URL", ""),
 		WebGuardLocation:   env("WEBGUARD_LOCATION", ""),
+		WebGuardInstanceID: env("WEBGUARD_INSTANCE_ID", ""),
 
 		QueueDefaultWorkers: envInt("QUEUE_DEFAULT_WORKERS", 3),
 		RunMaxConcurrency:   envInt("RUN_MAX_CONCURRENCY", envInt("QUEUE_DEFAULT_WORKERS", 3)),
+		JobLeasesEnabled:    envBool("WEBGUARD_JOB_LEASES_ENABLED", false),
+		JobLeasesDualWrite:  envBool("WEBGUARD_JOB_LEASES_DUAL_WRITE", false),
+		JobLeaseMaxBatch:    envInt("WEBGUARD_JOB_LEASE_MAX_BATCH", envInt("QUEUE_DEFAULT_WORKERS", 3)),
 		AllowPrivateTargets: envBool("WEBGUARD_ALLOW_PRIVATE_TARGETS", false),
 
 		Address: env("BIND_ADDRESS", ":"+port),

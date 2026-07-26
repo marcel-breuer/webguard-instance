@@ -16,6 +16,7 @@ The current package boundaries and dependency rule are documented in
   - `POST /api/v1/internal/monitoring-responses`
   - `POST /api/v1/internal/ssl-results`
   - `POST /api/v1/internal/domain-results`
+  - Feature-flagged lease protocol: claim, complete, and release monitoring jobs
   - `X-INSTANCE-CODE` + `X-API-KEY` header authentication
 - **Parallel Monitoring Execution**
   - Response, SSL, and domain expiration phases run in parallel
@@ -94,10 +95,17 @@ Runtime settings:
 
 - `QUEUE_DEFAULT_WORKERS` (default: `3`)
 - `RUN_MAX_CONCURRENCY` (default: `QUEUE_DEFAULT_WORKERS`; shared upper bound across all check phases)
+- `WEBGUARD_JOB_LEASES_ENABLED` (default: `false`; use Core-issued leases instead of legacy polling)
+- `WEBGUARD_JOB_LEASES_DUAL_WRITE` (default: `false`; also post legacy result endpoints during a staged Core rollout)
+- `WEBGUARD_INSTANCE_ID` (required when leases are enabled; stable worker identity, distinct from its location)
+- `WEBGUARD_JOB_LEASE_MAX_BATCH` (default: `QUEUE_DEFAULT_WORKERS`; maximum jobs requested in one lease claim)
 - `WEBGUARD_ALLOW_PRIVATE_TARGETS` (default: `false`; set to `true` only when this worker should monitor private, loopback, or link-local targets)
 - `PORT` (default: `8080`)
 
 See `.env.example` for full defaults.
+
+The contract and rollout sequence for horizontally scaled workers are in
+[the monitoring job lease protocol](JOB_LEASE_PROTOCOL.md).
 
 ## CI/CD
 
