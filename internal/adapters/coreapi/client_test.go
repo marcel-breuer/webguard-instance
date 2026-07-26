@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ func TestGetMonitoringsIncludesHeadersAndQuery(t *testing.T) {
 		gotLocation = request.URL.Query().Get("location")
 		gotType = request.URL.Query().Get("type")
 
-		if request.URL.Path != "/api/v1/internal/monitorings" {
+		if request.URL.Path != "/api/v1/internal/instances/monitorings" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
 
@@ -79,6 +80,66 @@ func TestClientRecordsBoundedCoreRequestTelemetry(t *testing.T) {
 	metric := telemetry.Snapshot().Core["get_monitorings"]
 	if metric.Count != 1 || metric.Errors != 1 || metric.Duration < 0 {
 		t.Fatalf("unexpected Core telemetry: %#v", metric)
+	}
+}
+
+func TestClientSupportsConfiguredLegacyAndTargetInstancePaths(t *testing.T) {
+	t.Parallel()
+
+	for _, instanceAPIPath := range []string{DefaultInstanceAPIBasePath, LegacyInstanceAPIBasePath} {
+		instanceAPIPath := instanceAPIPath
+		t.Run(instanceAPIPath, func(t *testing.T) {
+			var paths []string
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Header.Get("X-API-KEY") != "secret-key" || request.Header.Get("X-INSTANCE-CODE") != "de-1" {
+					t.Fatalf("missing instance authentication headers")
+				}
+				paths = append(paths, request.URL.Path)
+				if request.URL.Path == instanceAPIPath+"/monitorings" {
+					writer.Header().Set("Content-Type", "application/json")
+					_, _ = writer.Write([]byte(`[]`))
+					return
+				}
+				writer.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			client := NewClientWithInstanceAPIPath(server.URL, "secret-key", "de-1", instanceAPIPath)
+			if _, err := client.GetMonitorings(context.Background(), "de-1", nil); err != nil {
+				t.Fatalf("GetMonitorings failed: %v", err)
+			}
+			if err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{MonitoringID: "1", Status: monitor.StatusUp}); err != nil {
+				t.Fatalf("PostMonitoringResponse failed: %v", err)
+			}
+			if err := client.PostSSLResult(context.Background(), monitor.SSLResultPayload{MonitoringID: "1", IsValid: true}); err != nil {
+				t.Fatalf("PostSSLResult failed: %v", err)
+			}
+			if err := client.PostDomainResult(context.Background(), monitor.DomainResultPayload{MonitoringID: "1", IsValid: true}); err != nil {
+				t.Fatalf("PostDomainResult failed: %v", err)
+			}
+			expectedPaths := []string{
+				instanceAPIPath + "/monitorings",
+				instanceAPIPath + "/monitoring-responses",
+				instanceAPIPath + "/ssl-results",
+				instanceAPIPath + "/domain-results",
+			}
+			if !slices.Equal(paths, expectedPaths) {
+				t.Fatalf("unexpected instance paths: got %v, want %v", paths, expectedPaths)
+			}
+		})
+	}
+}
+
+func TestClientRejectsUnsupportedInstancePath(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient("https://core.example.test", "secret-key", "de-1")
+	if err := client.SetInstanceAPIPath("/api/v1/internal/ui"); err == nil {
+		t.Fatal("expected UI path to be rejected")
+	}
+	client = NewClientWithInstanceAPIPath("https://core.example.test", "secret-key", "de-1", "/api/v1/internal/ui")
+	if _, err := client.GetMonitorings(context.Background(), "de-1", nil); err == nil || !strings.Contains(err.Error(), "INSTANCE_API_BASE_PATH") {
+		t.Fatalf("expected invalid configured path error, got %v", err)
 	}
 }
 
@@ -186,24 +247,24 @@ func TestClaimAndCompleteMonitoringJobsUseLeaseContract(t *testing.T) {
 			t.Fatalf("expected POST, got %s", request.Method)
 		}
 		switch request.URL.Path {
-		case "/api/v1/internal/monitoring-jobs/claim":
+		case "/api/v1/internal/instances/monitoring-jobs/claim":
 			if err := json.NewDecoder(request.Body).Decode(&claim); err != nil {
 				t.Fatalf("decode claim: %v", err)
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = writer.Write([]byte(`{"jobs":[{"job_id":"job-1","phase":"response","lease_expires_at":"2026-07-26T12:00:00Z","attempt":3,"idempotency_key":"key-1","monitoring":{"id":"42","type":"http","target":"https://example.com","timeout":10}}]}`))
-		case "/api/v1/internal/monitoring-jobs/job-1/complete":
+		case "/api/v1/internal/instances/monitoring-jobs/job-1/complete":
 			completionKey = request.Header.Get("Idempotency-Key")
 			if err := json.NewDecoder(request.Body).Decode(&completion); err != nil {
 				t.Fatalf("decode completion: %v", err)
 			}
 			writer.WriteHeader(http.StatusNoContent)
-		case "/api/v1/internal/monitoring-jobs/job-1/release":
+		case "/api/v1/internal/instances/monitoring-jobs/job-1/release":
 			if err := json.NewDecoder(request.Body).Decode(&release); err != nil {
 				t.Fatalf("decode release: %v", err)
 			}
 			writer.WriteHeader(http.StatusNoContent)
-		case "/api/v1/internal/monitoring-jobs/job-1/extend":
+		case "/api/v1/internal/instances/monitoring-jobs/job-1/extend":
 			if err := json.NewDecoder(request.Body).Decode(&extend); err != nil {
 				t.Fatalf("decode extend: %v", err)
 			}
@@ -284,7 +345,7 @@ func TestPostMonitoringResponsePayloadShape(t *testing.T) {
 	var body map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/internal/monitoring-responses" {
+		if request.URL.Path != "/api/v1/internal/instances/monitoring-responses" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
 
@@ -330,7 +391,7 @@ func TestPostMonitoringResponsePayloadIncludesHTTPStatusCode(t *testing.T) {
 	var body map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/internal/monitoring-responses" {
+		if request.URL.Path != "/api/v1/internal/instances/monitoring-responses" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
@@ -363,7 +424,7 @@ func TestPostSSLResultPayloadShape(t *testing.T) {
 	var body map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/internal/ssl-results" {
+		if request.URL.Path != "/api/v1/internal/instances/ssl-results" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
 
@@ -409,7 +470,7 @@ func TestPostDomainResultPayloadShape(t *testing.T) {
 	var body map[string]any
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/internal/domain-results" {
+		if request.URL.Path != "/api/v1/internal/instances/domain-results" {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
 

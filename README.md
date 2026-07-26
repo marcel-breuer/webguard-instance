@@ -12,10 +12,10 @@ The current package boundaries and dependency rule are documented in
 ## Features
 
 - **Core-Compatible API Contract**
-  - `GET /api/v1/internal/monitorings`
-  - `POST /api/v1/internal/monitoring-responses`
-  - `POST /api/v1/internal/ssl-results`
-  - `POST /api/v1/internal/domain-results`
+  - Core instance contract `v1` at `GET /api/v1/internal/instances/monitorings`
+  - `POST /api/v1/internal/instances/monitoring-responses`
+  - `POST /api/v1/internal/instances/ssl-results`
+  - `POST /api/v1/internal/instances/domain-results`
   - Feature-flagged lease protocol: claim, complete, and release monitoring jobs
   - `X-INSTANCE-CODE` + `X-API-KEY` header authentication
 - **Parallel Monitoring Execution**
@@ -90,6 +90,7 @@ Main integration settings:
 - `WEBGUARD_LOCATION` (instance code used for `location` query and `X-INSTANCE-CODE` header)
 - `WEBGUARD_CORE_API_KEY`
 - `WEBGUARD_CORE_API_URL`
+- `WEBGUARD_INSTANCE_API_BASE_PATH` (default: `/api/v1/internal/instances`; set `/api/v1/internal` only for the documented legacy compatibility window)
 
 Runtime settings:
 
@@ -107,6 +108,11 @@ See `.env.example` for full defaults.
 
 The contract and rollout sequence for horizontally scaled workers are in
 [the monitoring job lease protocol](JOB_LEASE_PROTOCOL.md).
+
+The supported Core scanner contract is `v1`, published by WebGuard Core as the
+[WebGuard Instance API contract](https://github.com/marcel-breuer/webguard/blob/main/docs/integrations/webguard-instance-api.md).
+The adapter accepts only its target instance path and the documented legacy
+path; it never calls browser UI routes.
 
 ## Operations
 

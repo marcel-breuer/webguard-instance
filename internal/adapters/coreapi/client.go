@@ -15,14 +15,24 @@ import (
 	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
-const maxResponseBodyBytes = 4 << 20
+const (
+	maxResponseBodyBytes = 4 << 20
+
+	// SupportedContractVersion is the versioned Core instance contract from
+	// WebGuard Core #593. The path is independently configurable during its
+	// documented compatibility window.
+	SupportedContractVersion   = "v1"
+	DefaultInstanceAPIBasePath = "/api/v1/internal/instances"
+	LegacyInstanceAPIBasePath  = "/api/v1/internal"
+)
 
 type Client struct {
-	baseURL      string
-	apiKey       string
-	instanceCode string
-	httpClient   *http.Client
-	telemetry    *application.Telemetry
+	baseURL         string
+	apiKey          string
+	instanceCode    string
+	instanceAPIPath string
+	httpClient      *http.Client
+	telemetry       *application.Telemetry
 }
 
 type HTTPStatusError struct {
@@ -36,13 +46,31 @@ func (e *HTTPStatusError) Error() string {
 
 func NewClient(baseURL, apiKey, instanceCode string) *Client {
 	return &Client{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		apiKey:       strings.TrimSpace(apiKey),
-		instanceCode: strings.TrimSpace(instanceCode),
+		baseURL:         strings.TrimRight(baseURL, "/"),
+		apiKey:          strings.TrimSpace(apiKey),
+		instanceCode:    strings.TrimSpace(instanceCode),
+		instanceAPIPath: DefaultInstanceAPIBasePath,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
+}
+
+func NewClientWithInstanceAPIPath(baseURL, apiKey, instanceCode, instanceAPIPath string) *Client {
+	client := NewClient(baseURL, apiKey, instanceCode)
+	if err := client.SetInstanceAPIPath(instanceAPIPath); err != nil {
+		client.instanceAPIPath = ""
+	}
+	return client
+}
+
+func (c *Client) SetInstanceAPIPath(instanceAPIPath string) error {
+	normalized, err := normalizeInstanceAPIPath(instanceAPIPath)
+	if err != nil {
+		return err
+	}
+	c.instanceAPIPath = normalized
+	return nil
 }
 
 func (c *Client) SetHTTPClient(httpClient *http.Client) {
@@ -105,7 +133,7 @@ func (c *Client) getMonitorings(ctx context.Context, location string, monitoring
 		query.Set("type", string(monitoringType))
 	}
 
-	request, err := c.newRequest(ctx, http.MethodGet, "/api/v1/internal/monitorings", query, nil)
+	request, err := c.newRequest(ctx, http.MethodGet, c.instanceAPIEndpoint("/monitorings"), query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +146,7 @@ func (c *Client) getMonitorings(ctx context.Context, location string, monitoring
 }
 
 func (c *Client) PostMonitoringResponse(ctx context.Context, payload monitor.MonitoringResponsePayload) error {
-	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-responses", nil, payload)
+	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/monitoring-responses"), nil, payload)
 	if err != nil {
 		return err
 	}
@@ -127,7 +155,7 @@ func (c *Client) PostMonitoringResponse(ctx context.Context, payload monitor.Mon
 }
 
 func (c *Client) PostSSLResult(ctx context.Context, payload monitor.SSLResultPayload) error {
-	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/ssl-results", nil, payload)
+	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/ssl-results"), nil, payload)
 	if err != nil {
 		return err
 	}
@@ -136,7 +164,7 @@ func (c *Client) PostSSLResult(ctx context.Context, payload monitor.SSLResultPay
 }
 
 func (c *Client) PostDomainResult(ctx context.Context, payload monitor.DomainResultPayload) error {
-	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/domain-results", nil, payload)
+	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/domain-results"), nil, payload)
 	if err != nil {
 		return err
 	}
@@ -158,7 +186,7 @@ func (c *Client) ClaimMonitoringJobs(ctx context.Context, payload monitor.ClaimM
 		return nil, fmt.Errorf("claim max batch size must be positive")
 	}
 
-	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/claim", nil, payload)
+	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/monitoring-jobs/claim"), nil, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -177,7 +205,7 @@ func (c *Client) CompleteMonitoringJob(ctx context.Context, jobID, idempotencyKe
 	if strings.TrimSpace(idempotencyKey) == "" {
 		return fmt.Errorf("job idempotency key is empty")
 	}
-	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/"+url.PathEscape(jobID)+"/complete", nil, payload)
+	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/monitoring-jobs/"+url.PathEscape(jobID)+"/complete"), nil, payload)
 	if err != nil {
 		return err
 	}
@@ -189,7 +217,7 @@ func (c *Client) ReleaseMonitoringJob(ctx context.Context, jobID string, payload
 	if strings.TrimSpace(jobID) == "" {
 		return fmt.Errorf("job ID is empty")
 	}
-	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/"+url.PathEscape(jobID)+"/release", nil, payload)
+	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/monitoring-jobs/"+url.PathEscape(jobID)+"/release"), nil, payload)
 	if err != nil {
 		return err
 	}
@@ -200,7 +228,7 @@ func (c *Client) ExtendMonitoringJob(ctx context.Context, jobID string, payload 
 	if strings.TrimSpace(jobID) == "" {
 		return monitor.ExtendMonitoringJobResponse{}, fmt.Errorf("job ID is empty")
 	}
-	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/"+url.PathEscape(jobID)+"/extend", nil, payload)
+	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/monitoring-jobs/"+url.PathEscape(jobID)+"/extend"), nil, payload)
 	if err != nil {
 		return monitor.ExtendMonitoringJobResponse{}, err
 	}
@@ -214,6 +242,9 @@ func (c *Client) ExtendMonitoringJob(ctx context.Context, jobID string, payload 
 func (c *Client) newRequest(ctx context.Context, method, path string, query url.Values, body any) (*http.Request, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("WEBGUARD_CORE_API_URL is empty")
+	}
+	if c.instanceAPIPath == "" {
+		return nil, fmt.Errorf("WEBGUARD_INSTANCE_API_BASE_PATH is invalid")
 	}
 
 	endpoint, err := url.Parse(c.baseURL + path)
@@ -249,6 +280,20 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	}
 
 	return request, nil
+}
+
+func (c *Client) instanceAPIEndpoint(suffix string) string {
+	return c.instanceAPIPath + suffix
+}
+
+func normalizeInstanceAPIPath(instanceAPIPath string) (string, error) {
+	normalized := "/" + strings.Trim(strings.TrimSpace(instanceAPIPath), "/")
+	switch normalized {
+	case DefaultInstanceAPIBasePath, LegacyInstanceAPIBasePath:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported WEBGUARD_INSTANCE_API_BASE_PATH %q", instanceAPIPath)
+	}
 }
 
 func (c *Client) doJSON(request *http.Request, out any, operation string) (resultErr error) {
