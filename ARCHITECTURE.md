@@ -40,11 +40,11 @@ statuses, and result payloads. These types do not depend on transports.
 - `adapters/coreapi` implements the WebGuard Core HTTP client.
 - `adapters/health` provides liveness HTTP handlers and graceful server
   shutdown.
-- `adapters/runner` currently adapts the concrete HTTP, TLS, ping, TCP, and DNS checks
-  to the application phases.
+- `adapters/runner` registers independent HTTP, keyword, ping, TCP, DNS, TLS,
+  and domain-expiry executors. Each executor produces normalized result
+  payloads, which the shared publisher sends to Core.
 - `adapters/domainlookup` and `adapters/target` isolate RDAP/WHOIS and
   egress-policy details.
 
-The next migration step is to split `runner` into independently registered
-check executors. That change is deliberately separate so the new package
-boundaries remain compatible with the current API and behaviour.
+The next migration step is a bounded execution controller that applies global
+and per-executor concurrency limits without changing the Core API contract.
