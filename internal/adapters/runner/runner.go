@@ -108,7 +108,13 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
+				release, err := application.AcquireExecutionSlot(ctx)
+				if err != nil {
+					r.logger.Printf("Response monitoring canceled before execution (monitoring_id=%s): %v", monitoring.ID, err)
+					continue
+				}
 				execution, _ := r.executors.Execute(ctx, PhaseResponse, monitoring)
+				release()
 				r.logger.Printf(
 					"Response monitoring result computed (monitoring_id=%s type=%s %s)",
 					monitoring.ID,
@@ -181,7 +187,13 @@ func (r *MonitoringService) runSSL(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
+				release, err := application.AcquireExecutionSlot(ctx)
+				if err != nil {
+					r.logger.Printf("SSL monitoring canceled before execution (monitoring_id=%s): %v", monitoring.ID, err)
+					continue
+				}
 				execution, _ := r.executors.Execute(ctx, PhaseSSL, monitoring)
+				release()
 				r.publishExecution(ctx, execution)
 			}
 		}()
@@ -246,7 +258,13 @@ func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
+				release, err := application.AcquireExecutionSlot(ctx)
+				if err != nil {
+					r.logger.Printf("Domain expiration monitoring canceled before execution (monitoring_id=%s): %v", monitoring.ID, err)
+					continue
+				}
 				execution, _ := r.executors.Execute(ctx, PhaseDomainExpiration, monitoring)
+				release()
 				r.logger.Printf(
 					"Domain expiration monitoring result computed (monitoring_id=%s %s)",
 					monitoring.ID,

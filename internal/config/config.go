@@ -12,6 +12,7 @@ type Config struct {
 	WebGuardLocation   string
 
 	QueueDefaultWorkers int
+	RunMaxConcurrency   int
 	AllowPrivateTargets bool
 
 	Address string
@@ -25,6 +26,7 @@ func FromEnv() Config {
 		WebGuardLocation:   env("WEBGUARD_LOCATION", ""),
 
 		QueueDefaultWorkers: envInt("QUEUE_DEFAULT_WORKERS", 3),
+		RunMaxConcurrency:   envInt("RUN_MAX_CONCURRENCY", envInt("QUEUE_DEFAULT_WORKERS", 3)),
 		AllowPrivateTargets: envBool("WEBGUARD_ALLOW_PRIVATE_TARGETS", false),
 
 		Address: env("BIND_ADDRESS", ":"+port),

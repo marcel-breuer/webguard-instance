@@ -93,6 +93,7 @@ Main integration settings:
 Runtime settings:
 
 - `QUEUE_DEFAULT_WORKERS` (default: `3`)
+- `RUN_MAX_CONCURRENCY` (default: `QUEUE_DEFAULT_WORKERS`; shared upper bound across all check phases)
 - `WEBGUARD_ALLOW_PRIVATE_TARGETS` (default: `false`; set to `true` only when this worker should monitor private, loopback, or link-local targets)
 - `PORT` (default: `8080`)
 

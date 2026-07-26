@@ -13,6 +13,7 @@ import (
 	"github.com/marcel-breuer/webguard-instance/internal/adapters/health"
 	"github.com/marcel-breuer/webguard-instance/internal/adapters/runner"
 	"github.com/marcel-breuer/webguard-instance/internal/adapters/scheduler"
+	"github.com/marcel-breuer/webguard-instance/internal/application"
 	"github.com/marcel-breuer/webguard-instance/internal/config"
 )
 
@@ -26,7 +27,7 @@ func main() {
 	logger := log.New(os.Stdout, "", 0)
 	cfg := config.FromEnv()
 	coreClient := coreapi.NewClient(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation)
-	service := runner.New(coreClient, cfg, logger)
+	service := application.NewExecutionController(runner.New(coreClient, cfg, logger), logger, cfg.RunMaxConcurrency)
 
 	exitCode := run(os.Args[1:], logger, cfg, service, runServe, os.Stderr)
 	os.Exit(exitCode)
