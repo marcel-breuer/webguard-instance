@@ -138,6 +138,73 @@ func (c *Client) PostDomainResult(ctx context.Context, payload monitor.DomainRes
 	return c.doJSON(request, nil)
 }
 
+func (c *Client) ClaimMonitoringJobs(ctx context.Context, payload monitor.ClaimMonitoringJobsRequest) ([]monitor.ClaimedJob, error) {
+	if strings.TrimSpace(payload.Location) == "" {
+		return nil, fmt.Errorf("claim location is empty")
+	}
+	if strings.TrimSpace(payload.InstanceID) == "" {
+		return nil, fmt.Errorf("WEBGUARD_INSTANCE_ID is empty")
+	}
+	if payload.Capacity < 1 {
+		return nil, fmt.Errorf("claim capacity must be positive")
+	}
+	if payload.MaxBatchSize < 1 {
+		return nil, fmt.Errorf("claim max batch size must be positive")
+	}
+
+	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/claim", nil, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var response monitor.ClaimMonitoringJobsResponse
+	if err := c.doJSON(request, &response); err != nil {
+		return nil, err
+	}
+	return response.Jobs, nil
+}
+
+func (c *Client) CompleteMonitoringJob(ctx context.Context, jobID, idempotencyKey string, payload monitor.CompleteMonitoringJobRequest) error {
+	if strings.TrimSpace(jobID) == "" {
+		return fmt.Errorf("job ID is empty")
+	}
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return fmt.Errorf("job idempotency key is empty")
+	}
+	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/"+url.PathEscape(jobID)+"/complete", nil, payload)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Idempotency-Key", idempotencyKey)
+	return c.doJSON(request, nil)
+}
+
+func (c *Client) ReleaseMonitoringJob(ctx context.Context, jobID string, payload monitor.ReleaseMonitoringJobRequest) error {
+	if strings.TrimSpace(jobID) == "" {
+		return fmt.Errorf("job ID is empty")
+	}
+	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/"+url.PathEscape(jobID)+"/release", nil, payload)
+	if err != nil {
+		return err
+	}
+	return c.doJSON(request, nil)
+}
+
+func (c *Client) ExtendMonitoringJob(ctx context.Context, jobID string, payload monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error) {
+	if strings.TrimSpace(jobID) == "" {
+		return monitor.ExtendMonitoringJobResponse{}, fmt.Errorf("job ID is empty")
+	}
+	request, err := c.newRequest(ctx, http.MethodPost, "/api/v1/internal/monitoring-jobs/"+url.PathEscape(jobID)+"/extend", nil, payload)
+	if err != nil {
+		return monitor.ExtendMonitoringJobResponse{}, err
+	}
+	var response monitor.ExtendMonitoringJobResponse
+	if err := c.doJSON(request, &response); err != nil {
+		return monitor.ExtendMonitoringJobResponse{}, err
+	}
+	return response, nil
+}
+
 func (c *Client) newRequest(ctx context.Context, method, path string, query url.Values, body any) (*http.Request, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("WEBGUARD_CORE_API_URL is empty")

@@ -311,6 +311,9 @@ func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 
 func (r *MonitoringService) RunMonitoring(ctx context.Context) error {
 	r.logger.Println("Dispatching all monitoring jobs...")
+	if r.cfg.JobLeasesEnabled {
+		return r.runClaimedJobs(ctx)
+	}
 
 	return application.NewCoordinator(r.logger,
 		monitoringPhase{name: "response", run: r.runResponse},

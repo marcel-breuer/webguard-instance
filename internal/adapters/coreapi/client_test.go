@@ -149,6 +149,113 @@ func TestGetMonitoringsSupportsStringIDs(t *testing.T) {
 	}
 }
 
+func TestClaimAndCompleteMonitoringJobsUseLeaseContract(t *testing.T) {
+	t.Parallel()
+
+	var claim monitor.ClaimMonitoringJobsRequest
+	var completion monitor.CompleteMonitoringJobRequest
+	var completionKey string
+	var release monitor.ReleaseMonitoringJobRequest
+	var extend monitor.ExtendMonitoringJobRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-API-KEY") != "secret-key" || request.Header.Get("X-INSTANCE-CODE") != "de-1" {
+			t.Fatalf("missing Core authentication headers")
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", request.Method)
+		}
+		switch request.URL.Path {
+		case "/api/v1/internal/monitoring-jobs/claim":
+			if err := json.NewDecoder(request.Body).Decode(&claim); err != nil {
+				t.Fatalf("decode claim: %v", err)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"jobs":[{"job_id":"job-1","phase":"response","lease_expires_at":"2026-07-26T12:00:00Z","attempt":3,"idempotency_key":"key-1","monitoring":{"id":"42","type":"http","target":"https://example.com","timeout":10}}]}`))
+		case "/api/v1/internal/monitoring-jobs/job-1/complete":
+			completionKey = request.Header.Get("Idempotency-Key")
+			if err := json.NewDecoder(request.Body).Decode(&completion); err != nil {
+				t.Fatalf("decode completion: %v", err)
+			}
+			writer.WriteHeader(http.StatusNoContent)
+		case "/api/v1/internal/monitoring-jobs/job-1/release":
+			if err := json.NewDecoder(request.Body).Decode(&release); err != nil {
+				t.Fatalf("decode release: %v", err)
+			}
+			writer.WriteHeader(http.StatusNoContent)
+		case "/api/v1/internal/monitoring-jobs/job-1/extend":
+			if err := json.NewDecoder(request.Body).Decode(&extend); err != nil {
+				t.Fatalf("decode extend: %v", err)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"lease_expires_at":"2026-07-26T12:10:00Z"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	jobs, err := client.ClaimMonitoringJobs(context.Background(), monitor.ClaimMonitoringJobsRequest{
+		Location:     "de-1",
+		InstanceID:   "worker-de-1-a",
+		Capabilities: []string{"response", "ssl"},
+		Capacity:     2,
+		MaxBatchSize: 5,
+	})
+	if err != nil {
+		t.Fatalf("ClaimMonitoringJobs failed: %v", err)
+	}
+	if claim.InstanceID != "worker-de-1-a" || claim.MaxBatchSize != 5 || len(jobs) != 1 {
+		t.Fatalf("unexpected claim exchange: request=%#v jobs=%#v", claim, jobs)
+	}
+	if jobs[0].ID != "job-1" || jobs[0].Monitoring.ID != "42" || jobs[0].Attempt != 3 {
+		t.Fatalf("unexpected claimed job: %#v", jobs[0])
+	}
+
+	err = client.CompleteMonitoringJob(context.Background(), "job-1", "key-1", monitor.CompleteMonitoringJobRequest{
+		Attempt: 3,
+		Result: monitor.JobResult{Response: &monitor.MonitoringResponsePayload{
+			MonitoringID: "42", Status: monitor.StatusUp,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CompleteMonitoringJob failed: %v", err)
+	}
+	if completionKey != "key-1" || completion.Attempt != 3 || completion.Result.Response == nil || completion.Result.Response.MonitoringID != "42" {
+		t.Fatalf("unexpected completion exchange: key=%q request=%#v", completionKey, completion)
+	}
+
+	err = client.ReleaseMonitoringJob(context.Background(), "job-1", monitor.ReleaseMonitoringJobRequest{Attempt: 3, Reason: "unsupported monitoring job"})
+	if err != nil {
+		t.Fatalf("ReleaseMonitoringJob failed: %v", err)
+	}
+	if release.Attempt != 3 || release.Reason != "unsupported monitoring job" {
+		t.Fatalf("unexpected release exchange: %#v", release)
+	}
+
+	extended, err := client.ExtendMonitoringJob(context.Background(), "job-1", monitor.ExtendMonitoringJobRequest{Attempt: 3})
+	if err != nil {
+		t.Fatalf("ExtendMonitoringJob failed: %v", err)
+	}
+	if extend.Attempt != 3 || extended.LeaseExpiresAt.IsZero() {
+		t.Fatalf("unexpected extend exchange: request=%#v response=%#v", extend, extended)
+	}
+}
+
+func TestClaimMonitoringJobsRejectsInvalidWorkerRequest(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient("https://core.example.test", "secret-key", "de-1")
+	_, err := client.ClaimMonitoringJobs(context.Background(), monitor.ClaimMonitoringJobsRequest{Location: "de-1", Capacity: 1, MaxBatchSize: 1})
+	if err == nil || !strings.Contains(err.Error(), "WEBGUARD_INSTANCE_ID") {
+		t.Fatalf("expected missing instance id error, got %v", err)
+	}
+	_, err = client.ClaimMonitoringJobs(context.Background(), monitor.ClaimMonitoringJobsRequest{Location: "de-1", InstanceID: "worker", Capacity: 0, MaxBatchSize: 1})
+	if err == nil || !strings.Contains(err.Error(), "capacity") {
+		t.Fatalf("expected invalid capacity error, got %v", err)
+	}
+}
+
 func TestPostMonitoringResponsePayloadShape(t *testing.T) {
 	t.Parallel()
 

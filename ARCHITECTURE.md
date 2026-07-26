@@ -49,3 +49,10 @@ statuses, and result payloads. These types do not depend on transports.
 `application.ExecutionController` prevents overlapping local runs and applies
 one shared concurrency limit across all executor phases. The next migration
 step is the Core lease protocol for safe horizontal scaling across instances.
+When `WEBGUARD_JOB_LEASES_ENABLED` is set, the runner claims one mixed,
+capability-aware batch instead of fetching the three legacy phase lists. Core
+owns lease exclusivity, expiry, retry attempts, and idempotency; the worker
+owns only execution and completion or release of its claimed jobs.
+
+The exact boundary and staged deployment plan are documented in
+[JOB_LEASE_PROTOCOL.md](JOB_LEASE_PROTOCOL.md).
