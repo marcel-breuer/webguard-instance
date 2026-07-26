@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/marcel-breuer/webguard-instance/internal/monitor"
+	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 	"github.com/miekg/dns"
 )
 

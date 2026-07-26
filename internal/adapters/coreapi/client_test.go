@@ -1,4 +1,4 @@
-package core
+package coreapi
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/marcel-breuer/webguard-instance/internal/monitor"
+	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
 func TestGetMonitoringsIncludesHeadersAndQuery(t *testing.T) {

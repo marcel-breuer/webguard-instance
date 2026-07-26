@@ -6,6 +6,9 @@
 
 WebGuard Instance is a worker service for executing monitoring jobs from WebGuard Core and reporting the results back to the core API.
 
+The current package boundaries and dependency rule are documented in
+[Architecture](ARCHITECTURE.md).
+
 ## Features
 
 - **Core-Compatible API Contract**

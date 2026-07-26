@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/coreapi"
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/domainlookup"
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/target"
 	"github.com/marcel-breuer/webguard-instance/internal/config"
-	"github.com/marcel-breuer/webguard-instance/internal/core"
-	"github.com/marcel-breuer/webguard-instance/internal/domainlookup"
-	"github.com/marcel-breuer/webguard-instance/internal/monitor"
-	"github.com/marcel-breuer/webguard-instance/internal/target"
+	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
 
 type staticDomainLookup struct {
@@ -1049,7 +1049,7 @@ func TestRunDomainExpirationUsesCoreAPIEndpoints(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(core.NewClient(server.URL, "secret-key", "de-1"), config.Config{
+	r := New(coreapi.NewClient(server.URL, "secret-key", "de-1"), config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}, log.New(io.Discard, "", 0))
@@ -1090,7 +1090,7 @@ func TestLogFetchErrorIncludesStatusBody(t *testing.T) {
 	var logs bytes.Buffer
 	r := New(nil, config.Config{}, log.New(&logs, "", 0))
 
-	r.logFetchError(&core.HTTPStatusError{
+	r.logFetchError(&coreapi.HTTPStatusError{
 		StatusCode: http.StatusForbidden,
 		Body:       "forbidden",
 	})

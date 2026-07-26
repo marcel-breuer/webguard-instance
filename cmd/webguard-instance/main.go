@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/coreapi"
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/health"
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/runner"
+	"github.com/marcel-breuer/webguard-instance/internal/adapters/scheduler"
 	"github.com/marcel-breuer/webguard-instance/internal/config"
-	"github.com/marcel-breuer/webguard-instance/internal/core"
-	"github.com/marcel-breuer/webguard-instance/internal/runner"
-	"github.com/marcel-breuer/webguard-instance/internal/scheduler"
-	"github.com/marcel-breuer/webguard-instance/internal/server"
 )
 
 type monitoringService interface {
@@ -25,7 +25,7 @@ type serveFunc func(logger *log.Logger, service monitoringService, cfg config.Co
 func main() {
 	logger := log.New(os.Stdout, "", 0)
 	cfg := config.FromEnv()
-	coreClient := core.NewClient(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation)
+	coreClient := coreapi.NewClient(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation)
 	service := runner.New(coreClient, cfg, logger)
 
 	exitCode := run(os.Args[1:], logger, cfg, service, runServe, os.Stderr)
@@ -59,7 +59,7 @@ func runServe(logger *log.Logger, service monitoringService, cfg config.Config) 
 
 	go scheduler.RunEveryFiveMinutes(ctx, logger, service.RunMonitoring)
 
-	if err := server.Start(ctx, cfg.Address, logger); err != nil {
+	if err := health.Start(ctx, cfg.Address, logger); err != nil {
 		logger.Printf("Health server exited with error: %v", err)
 		return 1
 	}
