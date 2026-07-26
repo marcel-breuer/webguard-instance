@@ -37,28 +37,20 @@ const fixedPingTimeoutSeconds = 5
 
 var pingLatencyPattern = regexp.MustCompile(`time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms`)
 
-var pingExecutor = runPingCommand
-
-var responseMonitoringTypes = []monitor.Type{
-	monitor.TypeHTTP,
-	monitor.TypePing,
-	monitor.TypeKeyword,
-	monitor.TypePort,
-	monitor.TypeDNSRecord,
-}
-
-var sslMonitoringTypes = []monitor.Type{
-	monitor.TypeHTTP,
-	monitor.TypeKeyword,
-	monitor.TypePort,
-}
-
-var domainExpirationMonitoringTypes = []monitor.Type{
-	monitor.TypeDomainExpiration,
-}
-
 type DomainLookup interface {
 	Lookup(ctx context.Context, target string) (domainlookup.Result, error)
+}
+
+type PingCommandExecutor func(context.Context, string, int) ([]byte, error)
+
+type HTTPChecker interface {
+	Check(context.Context, monitor.Monitoring) (int, string, error)
+}
+
+type HTTPCheckFunc func(context.Context, monitor.Monitoring) (int, string, error)
+
+func (f HTTPCheckFunc) Check(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
+	return f(ctx, monitoring)
 }
 
 type MonitoringService struct {
@@ -67,25 +59,32 @@ type MonitoringService struct {
 	logger       *log.Logger
 	domainLookup DomainLookup
 	dnsChecker   *DNSRecordChecker
+	pingExecutor PingCommandExecutor
+	httpChecker  HTTPChecker
+	executors    *executorRegistry
 }
 
 func New(client application.MonitoringGateway, cfg config.Config, logger *log.Logger) *MonitoringService {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	return &MonitoringService{
+	service := &MonitoringService{
 		client:       client,
 		cfg:          cfg,
 		logger:       logger,
 		domainLookup: domainlookup.New(10 * time.Second),
 		dnsChecker:   NewDNSRecordChecker(nil, logger),
+		pingExecutor: runPingCommand,
 	}
+	service.httpChecker = HTTPCheckFunc(service.performHTTPRequest)
+	service.executors = service.newExecutorRegistry()
+	return service
 }
 
 func (r *MonitoringService) runResponse(ctx context.Context) error {
 	r.logger.Println("Dispatching response monitoring jobs...")
 
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, responseMonitoringTypes)
+	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseResponse))
 	if err != nil {
 		r.logFetchError(err)
 		return err
@@ -109,29 +108,20 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				status, responseTime, httpStatusCode := r.crawlResponseMonitoring(ctx, monitoring)
+				execution, _ := r.executors.Execute(ctx, PhaseResponse, monitoring)
 				r.logger.Printf(
-					"Response monitoring result computed (monitoring_id=%s type=%s status=%s response_time=%v http_status_code=%v)",
+					"Response monitoring result computed (monitoring_id=%s type=%s %s)",
 					monitoring.ID,
 					monitoring.Type,
-					status,
-					pointerFloat64Value(responseTime),
-					pointerIntValue(httpStatusCode),
+					execution,
 				)
-				if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
-					MonitoringID:   monitoring.ID,
-					Status:         status,
-					ResponseTime:   responseTime,
-					HTTPStatusCode: httpStatusCode,
-				}); err != nil {
-					r.logger.Printf("Failed to post response result (monitoring_id=%s): %v", monitoring.ID, err)
-				}
+				r.publishExecution(ctx, execution)
 			}
 		}()
 	}
 
 	for _, monitoring := range monitorings {
-		if !supportsResponseChecks(monitoring.Type) {
+		if !r.executors.Supports(PhaseResponse, monitoring.Type) {
 			skippedUnsupported++
 			r.logger.Printf(
 				"Skipping passive/unsupported response monitoring (monitoring_id=%s type=%s)",
@@ -143,14 +133,7 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 
 		if monitoring.MaintenanceActive {
 			skippedMaintenance++
-			if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
-				MonitoringID:   monitoring.ID,
-				Status:         monitor.StatusUnknown,
-				ResponseTime:   nil,
-				HTTPStatusCode: nil,
-			}); err != nil {
-				r.logger.Printf("Failed to post maintenance response result (monitoring_id=%s): %v", monitoring.ID, err)
-			}
+			r.publishExecution(ctx, maintenanceExecution(PhaseResponse, monitoring.ID))
 			continue
 		}
 
@@ -174,7 +157,7 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 func (r *MonitoringService) runSSL(ctx context.Context) error {
 	r.logger.Println("Dispatching SSL monitoring jobs...")
 
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, sslMonitoringTypes)
+	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseSSL))
 	if err != nil {
 		r.logFetchError(err)
 		return err
@@ -198,16 +181,14 @@ func (r *MonitoringService) runSSL(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				payload := r.crawlMonitoringSSL(ctx, monitoring)
-				if err := r.client.PostSSLResult(ctx, payload); err != nil {
-					r.logger.Printf("Failed to post SSL result (monitoring_id=%s): %v", monitoring.ID, err)
-				}
+				execution, _ := r.executors.Execute(ctx, PhaseSSL, monitoring)
+				r.publishExecution(ctx, execution)
 			}
 		}()
 	}
 
 	for _, monitoring := range monitorings {
-		if !supportsSSLChecks(monitoring.Type) {
+		if !r.executors.Supports(PhaseSSL, monitoring.Type) {
 			skippedUnsupported++
 			r.logger.Printf(
 				"Skipping passive/unsupported SSL monitoring (monitoring_id=%s type=%s)",
@@ -241,7 +222,7 @@ func (r *MonitoringService) runSSL(ctx context.Context) error {
 func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 	r.logger.Println("Dispatching domain expiration monitoring jobs...")
 
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, domainExpirationMonitoringTypes)
+	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseDomainExpiration))
 	if err != nil {
 		r.logFetchError(err)
 		return err
@@ -265,31 +246,19 @@ func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				status, domainPayload, hasDomainPayload := r.crawlDomainExpiration(ctx, monitoring)
+				execution, _ := r.executors.Execute(ctx, PhaseDomainExpiration, monitoring)
 				r.logger.Printf(
-					"Domain expiration monitoring result computed (monitoring_id=%s status=%s)",
+					"Domain expiration monitoring result computed (monitoring_id=%s %s)",
 					monitoring.ID,
-					status,
+					execution,
 				)
-				if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
-					MonitoringID:   monitoring.ID,
-					Status:         status,
-					ResponseTime:   nil,
-					HTTPStatusCode: nil,
-				}); err != nil {
-					r.logger.Printf("Failed to post domain expiration response result (monitoring_id=%s): %v", monitoring.ID, err)
-				}
-				if hasDomainPayload {
-					if err := r.client.PostDomainResult(ctx, domainPayload); err != nil {
-						r.logger.Printf("Failed to post domain expiration result (monitoring_id=%s): %v", monitoring.ID, err)
-					}
-				}
+				r.publishExecution(ctx, execution)
 			}
 		}()
 	}
 
 	for _, monitoring := range monitorings {
-		if monitoring.Type != monitor.TypeDomainExpiration {
+		if !r.executors.Supports(PhaseDomainExpiration, monitoring.Type) {
 			skippedUnsupported++
 			r.logger.Printf(
 				"Skipping unsupported domain expiration monitoring (monitoring_id=%s type=%s)",
@@ -301,14 +270,7 @@ func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 
 		if monitoring.MaintenanceActive {
 			skippedMaintenance++
-			if err := r.client.PostMonitoringResponse(ctx, monitor.MonitoringResponsePayload{
-				MonitoringID:   monitoring.ID,
-				Status:         monitor.StatusUnknown,
-				ResponseTime:   nil,
-				HTTPStatusCode: nil,
-			}); err != nil {
-				r.logger.Printf("Failed to post maintenance domain expiration response result (monitoring_id=%s): %v", monitoring.ID, err)
-			}
+			r.publishExecution(ctx, maintenanceExecution(PhaseDomainExpiration, monitoring.ID))
 			continue
 		}
 
@@ -362,52 +324,16 @@ func (r *MonitoringService) logFetchError(err error) {
 }
 
 func (r *MonitoringService) crawlResponseMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
-	switch monitoring.Type {
-	case monitor.TypeHTTP:
-		return r.handleHTTPMonitoring(ctx, monitoring)
-	case monitor.TypePing:
-		status, responseTime := handlePingMonitoring(ctx, monitoring, r.egressPolicy())
-		return status, responseTime, nil
-	case monitor.TypeKeyword:
-		return r.handleKeywordMonitoring(ctx, monitoring)
-	case monitor.TypePort:
-		status, responseTime := handlePortMonitoring(ctx, monitoring, r.egressPolicy())
-		return status, responseTime, nil
-	case monitor.TypeDNSRecord:
-		checker := r.dnsChecker
-		if checker == nil {
-			checker = NewDNSRecordChecker(nil, r.logger)
-		}
-		status, responseTime := checker.Check(ctx, monitoring)
-		return status, responseTime, nil
-	case monitor.TypeHeartbeat:
-		return monitor.StatusUnknown, nil, nil
-	default:
+	execution, ok := r.executors.Execute(ctx, PhaseResponse, monitoring)
+	if !ok || execution.Response == nil {
 		return monitor.StatusUnknown, nil, nil
 	}
-}
-
-func supportsResponseChecks(monitoringType monitor.Type) bool {
-	switch monitoringType {
-	case monitor.TypeHTTP, monitor.TypePing, monitor.TypeKeyword, monitor.TypePort, monitor.TypeDNSRecord:
-		return true
-	default:
-		return false
-	}
-}
-
-func supportsSSLChecks(monitoringType monitor.Type) bool {
-	switch monitoringType {
-	case monitor.TypeHTTP, monitor.TypeKeyword, monitor.TypePort:
-		return true
-	default:
-		return false
-	}
+	return execution.Response.Status, execution.Response.ResponseTime, execution.Response.HTTPStatusCode
 }
 
 func (r *MonitoringService) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	start := time.Now()
-	statusCode, _, err := r.performHTTPRequest(ctx, monitoring)
+	statusCode, _, err := r.httpCheck(ctx, monitoring)
 	if err != nil {
 		return monitor.StatusDown, nil, nil
 	}
@@ -421,7 +347,7 @@ func (r *MonitoringService) handleHTTPMonitoring(ctx context.Context, monitoring
 
 func (r *MonitoringService) handleKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
 	start := time.Now()
-	statusCode, body, err := r.performHTTPRequest(ctx, monitoring)
+	statusCode, body, err := r.httpCheck(ctx, monitoring)
 	if err != nil {
 		return monitor.StatusDown, nil, nil
 	}
@@ -433,11 +359,19 @@ func (r *MonitoringService) handleKeywordMonitoring(ctx context.Context, monitor
 	return monitor.StatusDown, nil, httpStatusCode
 }
 
+func (r *MonitoringService) httpCheck(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
+	checker := r.httpChecker
+	if checker == nil {
+		checker = HTTPCheckFunc(r.performHTTPRequest)
+	}
+	return checker.Check(ctx, monitoring)
+}
+
 func (r *MonitoringService) egressPolicy() target.EgressPolicy {
 	return target.EgressPolicy{AllowPrivate: r.cfg.AllowPrivateTargets}
 }
 
-func handlePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy) (monitor.Status, *float64) {
+func handlePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy, executor PingCommandExecutor) (monitor.Status, *float64) {
 	host, err := target.Host(monitoring.Target)
 	if err != nil {
 		return monitor.StatusDown, nil
@@ -452,7 +386,10 @@ func handlePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, po
 	}
 
 	start := time.Now()
-	output, err := pingExecutor(context.Background(), host, timeoutSeconds)
+	if executor == nil {
+		executor = runPingCommand
+	}
+	output, err := executor(ctx, host, timeoutSeconds)
 	responseTime := parsePingLatency(output)
 	if responseTime == nil {
 		elapsed := roundMilliseconds(time.Since(start))

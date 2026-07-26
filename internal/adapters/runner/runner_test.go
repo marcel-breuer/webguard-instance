@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -43,10 +44,10 @@ func (f *fakeCoreClient) GetMonitorings(_ context.Context, location string, type
 	})
 	f.mu.Unlock()
 
-	if len(types) == len(responseMonitoringTypes) {
+	if slices.Contains(types, monitor.TypePing) || slices.Contains(types, monitor.TypeDNSRecord) {
 		return append([]monitor.Monitoring(nil), f.responseMonitorings...), nil
 	}
-	if len(types) == len(domainExpirationMonitoringTypes) && types[0] == monitor.TypeDomainExpiration {
+	if slices.Contains(types, monitor.TypeDomainExpiration) {
 		return append([]monitor.Monitoring(nil), f.domainMonitorings...), nil
 	}
 
@@ -410,10 +411,10 @@ type parallelPhasesClient struct {
 
 func (p *parallelPhasesClient) GetMonitorings(_ context.Context, _ string, types []monitor.Type) ([]monitor.Monitoring, error) {
 	phase := "ssl"
-	if len(types) == len(responseMonitoringTypes) {
+	if slices.Contains(types, monitor.TypePing) || slices.Contains(types, monitor.TypeDNSRecord) {
 		phase = "response"
 	}
-	if len(types) == len(domainExpirationMonitoringTypes) && types[0] == monitor.TypeDomainExpiration {
+	if slices.Contains(types, monitor.TypeDomainExpiration) {
 		phase = "domain"
 	}
 	p.started <- phase

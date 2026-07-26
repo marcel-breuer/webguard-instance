@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,6 +84,31 @@ func TestNormalizeBody(t *testing.T) {
 	body = normalizeBody("invalid-json")
 	if string(body) != "[]" {
 		t.Fatalf("expected fallback body [] for invalid JSON string, got %s", string(body))
+	}
+}
+
+func TestHTTPAndKeywordExecutorsShareInjectedHTTPChecker(t *testing.T) {
+	t.Parallel()
+
+	var calls []monitor.Type
+	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r.httpChecker = HTTPCheckFunc(func(_ context.Context, monitoring monitor.Monitoring) (int, string, error) {
+		calls = append(calls, monitoring.Type)
+		return http.StatusOK, "expected keyword", nil
+	})
+
+	for _, monitoring := range []monitor.Monitoring{
+		{ID: "http-1", Type: monitor.TypeHTTP},
+		{ID: "keyword-1", Type: monitor.TypeKeyword, Keyword: "keyword"},
+	} {
+		execution, ok := r.executors.Execute(context.Background(), PhaseResponse, monitoring)
+		if !ok || execution.Response == nil || execution.Response.Status != monitor.StatusUp {
+			t.Fatalf("expected successful execution for %s, got %#v", monitoring.Type, execution)
+		}
+	}
+
+	if !slices.Equal(calls, []monitor.Type{monitor.TypeHTTP, monitor.TypeKeyword}) {
+		t.Fatalf("unexpected checker calls: %#v", calls)
 	}
 }
 
@@ -353,11 +379,6 @@ func TestPerformHTTPRequestRetriesOnTransportError(t *testing.T) {
 }
 
 func TestHandlePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
-	originalExecutor := pingExecutor
-	t.Cleanup(func() {
-		pingExecutor = originalExecutor
-	})
-
 	testCases := []struct {
 		name   string
 		target string
@@ -372,16 +393,16 @@ func TestHandlePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			var receivedHost string
 			var receivedTimeout int
-			pingExecutor = func(_ context.Context, host string, timeoutSeconds int) ([]byte, error) {
+			executor := PingCommandExecutor(func(_ context.Context, host string, timeoutSeconds int) ([]byte, error) {
 				receivedHost = host
 				receivedTimeout = timeoutSeconds
 				return []byte("64 bytes from " + host + ": icmp_seq=1 ttl=57 time=12.34 ms"), nil
-			}
+			})
 
 			status, responseTime := handlePingMonitoring(context.Background(), monitor.Monitoring{
 				Target:  testCase.target,
 				Timeout: 2,
-			}, target.EgressPolicy{AllowPrivate: true})
+			}, target.EgressPolicy{AllowPrivate: true}, executor)
 
 			if status != monitor.StatusUp {
 				t.Fatalf("expected up, got %s", status)
@@ -403,18 +424,13 @@ func TestHandlePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
 }
 
 func TestHandlePingMonitoringDown(t *testing.T) {
-	originalExecutor := pingExecutor
-	t.Cleanup(func() {
-		pingExecutor = originalExecutor
-	})
-
-	pingExecutor = func(_ context.Context, _ string, _ int) ([]byte, error) {
+	executor := PingCommandExecutor(func(_ context.Context, _ string, _ int) ([]byte, error) {
 		return []byte("100% packet loss"), errors.New("exit status 1")
-	}
+	})
 
 	status, responseTime := handlePingMonitoring(context.Background(), monitor.Monitoring{
 		Target: "8.8.8.8",
-	}, target.EgressPolicy{AllowPrivate: true})
+	}, target.EgressPolicy{AllowPrivate: true}, executor)
 	if status != monitor.StatusDown {
 		t.Fatalf("expected down, got %s", status)
 	}
