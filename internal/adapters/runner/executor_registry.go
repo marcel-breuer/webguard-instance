@@ -157,23 +157,23 @@ func (r *MonitoringService) newExecutorRegistry() *executorRegistry {
 }
 
 func (r *MonitoringService) executeHTTP(ctx context.Context, monitoring monitor.Monitoring) Execution {
-	status, responseTime, httpStatusCode := r.handleHTTPMonitoring(ctx, monitoring)
-	return responseExecution(monitoring.ID, status, responseTime, httpStatusCode)
+	status, responseTime, httpStatusCode, observation := r.observeHTTPMonitoring(ctx, monitoring)
+	return responseExecutionWithObservation(monitoring.ID, status, responseTime, httpStatusCode, &observation)
 }
 
 func (r *MonitoringService) executeKeyword(ctx context.Context, monitoring monitor.Monitoring) Execution {
-	status, responseTime, httpStatusCode := r.handleKeywordMonitoring(ctx, monitoring)
-	return responseExecution(monitoring.ID, status, responseTime, httpStatusCode)
+	status, responseTime, httpStatusCode, observation := r.observeKeywordMonitoring(ctx, monitoring)
+	return responseExecutionWithObservation(monitoring.ID, status, responseTime, httpStatusCode, &observation)
 }
 
 func (r *MonitoringService) executePing(ctx context.Context, monitoring monitor.Monitoring) Execution {
-	status, responseTime := handlePingMonitoring(ctx, monitoring, r.egressPolicy(), r.pingExecutor)
-	return responseExecution(monitoring.ID, status, responseTime, nil)
+	status, responseTime, observation := observePingMonitoring(ctx, monitoring, r.egressPolicy(), r.pingExecutor)
+	return responseExecutionWithObservation(monitoring.ID, status, responseTime, nil, &observation)
 }
 
 func (r *MonitoringService) executePort(ctx context.Context, monitoring monitor.Monitoring) Execution {
-	status, responseTime := handlePortMonitoring(ctx, monitoring, r.egressPolicy())
-	return responseExecution(monitoring.ID, status, responseTime, nil)
+	status, responseTime, observation := observePortMonitoring(ctx, monitoring, r.egressPolicy())
+	return responseExecutionWithObservation(monitoring.ID, status, responseTime, nil, &observation)
 }
 
 func (r *MonitoringService) executeDNSRecord(ctx context.Context, monitoring monitor.Monitoring) Execution {
@@ -181,8 +181,8 @@ func (r *MonitoringService) executeDNSRecord(ctx context.Context, monitoring mon
 	if checker == nil {
 		checker = NewDNSRecordChecker(nil, r.logger)
 	}
-	status, responseTime := checker.Check(ctx, monitoring)
-	return responseExecution(monitoring.ID, status, responseTime, nil)
+	status, responseTime, observation := checker.Observe(ctx, monitoring)
+	return responseExecutionWithObservation(monitoring.ID, status, responseTime, nil, &observation)
 }
 
 func (r *MonitoringService) executeSSL(ctx context.Context, monitoring monitor.Monitoring) Execution {
@@ -200,11 +200,16 @@ func (r *MonitoringService) executeDomainExpiration(ctx context.Context, monitor
 }
 
 func responseExecution(monitoringID string, status monitor.Status, responseTime *float64, httpStatusCode *int) Execution {
+	return responseExecutionWithObservation(monitoringID, status, responseTime, httpStatusCode, nil)
+}
+
+func responseExecutionWithObservation(monitoringID string, status monitor.Status, responseTime *float64, httpStatusCode *int, observation *monitor.RawObservation) Execution {
 	payload := monitor.MonitoringResponsePayload{
 		MonitoringID:   monitoringID,
 		Status:         status,
 		ResponseTime:   responseTime,
 		HTTPStatusCode: httpStatusCode,
+		Observation:    observation,
 	}
 	return Execution{Response: &payload}
 }

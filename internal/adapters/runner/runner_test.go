@@ -501,7 +501,26 @@ func TestRunResponsePostsHTTPStatusCodeForHTTPAndKeywordMonitoring(t *testing.T)
 		if *payload.HTTPStatusCode != http.StatusCreated {
 			t.Fatalf("expected http_status_code=%d for %s, got %d", http.StatusCreated, monitoringID, *payload.HTTPStatusCode)
 		}
+		if payload.Observation == nil {
+			t.Fatalf("expected raw observation for %s", monitoringID)
+		}
+		if payload.Observation.Type != payloadType(monitoringID) {
+			t.Fatalf("expected observation type %s for %s, got %s", payloadType(monitoringID), monitoringID, payload.Observation.Type)
+		}
+		if payload.Observation.HTTPStatusCode == nil || *payload.Observation.HTTPStatusCode != http.StatusCreated {
+			t.Fatalf("expected raw HTTP status code for %s", monitoringID)
+		}
+		if payload.Observation.ResponseTime == nil {
+			t.Fatalf("expected raw response time for %s", monitoringID)
+		}
 	}
+}
+
+func payloadType(monitoringID string) monitor.Type {
+	if monitoringID == "keyword-monitoring" {
+		return monitor.TypeKeyword
+	}
+	return monitor.TypeHTTP
 }
 
 func TestRunResponsePostsDNSRecordResultWithNilHTTPStatusCode(t *testing.T) {
@@ -549,6 +568,12 @@ func TestRunResponsePostsDNSRecordResultWithNilHTTPStatusCode(t *testing.T) {
 	}
 	if payload.HTTPStatusCode != nil {
 		t.Fatalf("expected nil http_status_code for dns record response")
+	}
+	if payload.Observation == nil || payload.Observation.DNSMatched == nil || !*payload.Observation.DNSMatched {
+		t.Fatalf("expected matched DNS observation, got %#v", payload.Observation)
+	}
+	if !slices.Equal(payload.Observation.DNSObservedValues, []string{"192.0.2.10"}) {
+		t.Fatalf("unexpected observed DNS values: %#v", payload.Observation.DNSObservedValues)
 	}
 }
 

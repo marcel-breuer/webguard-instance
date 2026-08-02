@@ -41,24 +41,41 @@ func (c *DNSRecordChecker) Supports(monitoringType monitor.Type) bool {
 }
 
 func (c *DNSRecordChecker) Check(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64) {
+	status, responseTime, _ := c.Observe(ctx, monitoring)
+	return status, responseTime
+}
+
+func (c *DNSRecordChecker) Observe(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, monitor.RawObservation) {
 	start := time.Now()
+	observation := monitor.RawObservation{
+		Type:              monitoring.Type,
+		ObservedAt:        start.UTC(),
+		DNSRecordType:     strings.TrimSpace(monitoring.DNSRecordType),
+		DNSExpectedValues: append([]string(nil), monitoring.DNSExpectedValues...),
+	}
 	responseTime := func() *float64 {
 		elapsed := roundMilliseconds(time.Since(start))
+		observation.ResponseTime = &elapsed
 		return &elapsed
+	}
+	failed := func(reason string) (monitor.Status, *float64, monitor.RawObservation) {
+		observation.TransportError = stringPointer(reason)
+		return monitor.StatusDown, nil, observation
 	}
 
 	target := strings.TrimSpace(monitoring.Target)
 	recordType := strings.TrimSpace(monitoring.DNSRecordType)
 	if target == "" || recordType == "" || len(monitoring.DNSExpectedValues) == 0 {
 		c.logf("Invalid DNS monitoring configuration for %s %s: target/type/expected values are required", target, recordType)
-		return monitor.StatusDown, responseTime()
+		return failed("invalid_configuration")
 	}
 
 	expected, err := normalizeDNSRecordValues(monitoring.DNSExpectedValues, recordType)
 	if err != nil {
 		c.logf("Invalid expected DNS values for %s %s: %v", target, recordType, err)
-		return monitor.StatusDown, responseTime()
+		return failed("invalid_expected_values")
 	}
+	observation.DNSExpectedValues = expected
 
 	timeout := fixedDNSTimeoutSeconds * time.Second
 	if monitoring.Timeout > 0 {
@@ -68,21 +85,24 @@ func (c *DNSRecordChecker) Check(ctx context.Context, monitoring monitor.Monitor
 	actualRaw, err := c.resolver.Resolve(ctx, target, recordType, timeout)
 	if err != nil {
 		c.logf("DNS lookup failed for %s %s: %v", target, recordType, err)
-		return monitor.StatusDown, responseTime()
+		return failed("dns_lookup_failed")
 	}
 
 	actual, err := normalizeDNSRecordValues(actualRaw, recordType)
 	if err != nil {
 		c.logf("Invalid DNS response values for %s %s: %v", target, recordType, err)
-		return monitor.StatusDown, responseTime()
+		return failed("invalid_observed_values")
 	}
+	observation.DNSObservedValues = actual
+	matched := slices.Equal(actual, expected)
+	observation.DNSMatched = boolPointer(matched)
 
-	if slices.Equal(actual, expected) {
-		return monitor.StatusUp, responseTime()
+	if matched {
+		return monitor.StatusUp, responseTime(), observation
 	}
 
 	c.logf("DNS mismatch for %s %s\nexpected: %q\nactual: %q", target, recordType, expected, actual)
-	return monitor.StatusDown, responseTime()
+	return monitor.StatusDown, responseTime(), observation
 }
 
 func (c *DNSRecordChecker) logf(format string, args ...any) {
