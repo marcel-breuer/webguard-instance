@@ -417,6 +417,55 @@ func TestPostMonitoringResponsePayloadIncludesHTTPStatusCode(t *testing.T) {
 	}
 }
 
+func TestPostMonitoringResponsePayloadIncludesRawObservation(t *testing.T) {
+	t.Parallel()
+
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/internal/instances/monitoring-responses" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	responseTime := 123.45
+	statusCode := http.StatusOK
+	connected := true
+	client := NewClient(server.URL, "secret-key", "de-1")
+	err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
+		MonitoringID: "42",
+		Status:       monitor.StatusUp,
+		Observation: &monitor.RawObservation{
+			Type:           monitor.TypeHTTP,
+			ObservedAt:     time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC),
+			HTTPStatusCode: &statusCode,
+			ResponseTime:   &responseTime,
+			Connected:      &connected,
+		},
+	})
+	if err != nil {
+		t.Fatalf("PostMonitoringResponse failed: %v", err)
+	}
+
+	observation, ok := body["observation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected observation object, got %#v", body["observation"])
+	}
+	if observation["type"] != string(monitor.TypeHTTP) {
+		t.Fatalf("expected observation type http, got %#v", observation["type"])
+	}
+	if observation["http_status_code"] != float64(http.StatusOK) {
+		t.Fatalf("expected observation http status 200, got %#v", observation["http_status_code"])
+	}
+	if observation["response_time"] != responseTime {
+		t.Fatalf("expected observation response time %v, got %#v", responseTime, observation["response_time"])
+	}
+}
+
 func TestPostSSLResultPayloadShape(t *testing.T) {
 	t.Parallel()
 

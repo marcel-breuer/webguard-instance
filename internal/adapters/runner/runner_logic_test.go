@@ -112,6 +112,72 @@ func TestHTTPAndKeywordExecutorsShareInjectedHTTPChecker(t *testing.T) {
 	}
 }
 
+func TestResponseExecutorsPreserveFailureEvidenceWithoutResponseTime(t *testing.T) {
+	t.Parallel()
+
+	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
+		return 0, "", errors.New("connection refused")
+	})
+	r.pingExecutor = func(context.Context, string, int) ([]byte, error) {
+		return []byte("100% packet loss"), errors.New("exit status 1")
+	}
+
+	cases := []struct {
+		name       string
+		monitoring monitor.Monitoring
+		assert     func(*testing.T, monitor.RawObservation)
+	}{
+		{
+			name:       "http transport failure",
+			monitoring: monitor.Monitoring{ID: "http-failed", Type: monitor.TypeHTTP},
+			assert: func(t *testing.T, observation monitor.RawObservation) {
+				if observation.TransportError == nil || *observation.TransportError != "http_transport_error" {
+					t.Fatalf("expected HTTP transport error, got %#v", observation.TransportError)
+				}
+			},
+		},
+		{
+			name:       "ping failure",
+			monitoring: monitor.Monitoring{ID: "ping-failed", Type: monitor.TypePing, Target: "8.8.8.8"},
+			assert: func(t *testing.T, observation monitor.RawObservation) {
+				if observation.Connected == nil || *observation.Connected {
+					t.Fatalf("expected failed ping connection, got %#v", observation.Connected)
+				}
+			},
+		},
+		{
+			name:       "port failure",
+			monitoring: monitor.Monitoring{ID: "port-failed", Type: monitor.TypePort, Target: "127.0.0.1", Port: 0},
+			assert: func(t *testing.T, observation monitor.RawObservation) {
+				if observation.Connected == nil || *observation.Connected {
+					t.Fatalf("expected failed port connection, got %#v", observation.Connected)
+				}
+			},
+		},
+	}
+
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			execution, ok := r.executors.Execute(context.Background(), PhaseResponse, testCase.monitoring)
+			if !ok || execution.Response == nil {
+				t.Fatalf("expected response execution, got %#v", execution)
+			}
+			if execution.Response.Status != monitor.StatusDown {
+				t.Fatalf("expected down status, got %s", execution.Response.Status)
+			}
+			if execution.Response.ResponseTime != nil {
+				t.Fatalf("expected nil response time, got %v", *execution.Response.ResponseTime)
+			}
+			if execution.Response.Observation == nil {
+				t.Fatal("expected raw observation")
+			}
+			testCase.assert(t, *execution.Response.Observation)
+		})
+	}
+}
+
 func TestPerformHTTPRequestGETWithHeadersAndBasicAuth(t *testing.T) {
 	t.Parallel()
 
@@ -434,8 +500,8 @@ func TestHandlePingMonitoringDown(t *testing.T) {
 	if status != monitor.StatusDown {
 		t.Fatalf("expected down, got %s", status)
 	}
-	if responseTime == nil {
-		t.Fatalf("expected fallback response time")
+	if responseTime != nil {
+		t.Fatalf("expected nil response time for failed ping")
 	}
 }
 
@@ -613,7 +679,7 @@ func TestDNSRecordCheckerARecordMismatchReportsDown(t *testing.T) {
 		t.Fatalf("expected down, got %s", status)
 	}
 	if responseTime == nil {
-		t.Fatalf("expected response time")
+		t.Fatalf("expected response time for DNS mismatch")
 	}
 }
 
@@ -633,8 +699,8 @@ func TestDNSRecordCheckerMissingRecordReportsDown(t *testing.T) {
 	if status != monitor.StatusDown {
 		t.Fatalf("expected down, got %s", status)
 	}
-	if responseTime == nil {
-		t.Fatalf("expected response time")
+	if responseTime != nil {
+		t.Fatalf("expected nil response time for failed DNS lookup")
 	}
 }
 
@@ -672,8 +738,8 @@ func TestDNSRecordCheckerUnsupportedRecordTypeReportsDown(t *testing.T) {
 	if status != monitor.StatusDown {
 		t.Fatalf("expected down for unsupported record type, got %s", status)
 	}
-	if responseTime == nil {
-		t.Fatalf("expected response time")
+	if responseTime != nil {
+		t.Fatalf("expected nil response time for invalid DNS request")
 	}
 }
 

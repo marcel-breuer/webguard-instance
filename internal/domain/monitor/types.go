@@ -172,10 +172,29 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 }
 
 type MonitoringResponsePayload struct {
-	MonitoringID   string   `json:"monitoring_id"`
-	Status         Status   `json:"status"`
-	ResponseTime   *float64 `json:"response_time"`
-	HTTPStatusCode *int     `json:"http_status_code"`
+	MonitoringID   string          `json:"monitoring_id"`
+	Status         Status          `json:"status"`
+	ResponseTime   *float64        `json:"response_time"`
+	HTTPStatusCode *int            `json:"http_status_code"`
+	Observation    *RawObservation `json:"observation,omitempty"`
+}
+
+// RawObservation contains the evidence used by Core to derive availability
+// and performance health. The legacy fields above remain populated during the
+// scanner contract migration.
+type RawObservation struct {
+	Type              Type              `json:"type"`
+	ObservedAt        time.Time         `json:"observed_at"`
+	HTTPStatusCode    *int              `json:"http_status_code,omitempty"`
+	ResponseTime      *float64          `json:"response_time,omitempty"`
+	TransportError    *string           `json:"transport_error,omitempty"`
+	Connected         *bool             `json:"connected,omitempty"`
+	KeywordMatched    *bool             `json:"keyword_matched,omitempty"`
+	DNSRecordType     string            `json:"dns_record_type,omitempty"`
+	DNSExpectedValues []string          `json:"dns_expected_values,omitempty"`
+	DNSObservedValues []string          `json:"dns_observed_values,omitempty"`
+	DNSMatched        *bool             `json:"dns_matched,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
 }
 
 type SSLResultPayload struct {

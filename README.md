@@ -16,6 +16,8 @@ The current package boundaries and dependency rule are documented in
   - `POST /api/v1/internal/instances/monitoring-responses`
   - `POST /api/v1/internal/instances/ssl-results`
   - `POST /api/v1/internal/instances/domain-results`
+  - additive raw observations for derived health; see
+    [the monitoring observation contract](MONITORING_OBSERVATION_CONTRACT.md)
   - Feature-flagged lease protocol: claim, complete, and release monitoring jobs
   - `X-INSTANCE-CODE` + `X-API-KEY` header authentication
 - **Parallel Monitoring Execution**

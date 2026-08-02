@@ -365,31 +365,52 @@ func (r *MonitoringService) crawlResponseMonitoring(ctx context.Context, monitor
 }
 
 func (r *MonitoringService) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
+	status, responseTime, httpStatusCode, _ := r.observeHTTPMonitoring(ctx, monitoring)
+	return status, responseTime, httpStatusCode
+}
+
+func (r *MonitoringService) observeHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int, monitor.RawObservation) {
 	start := time.Now()
+	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: start.UTC()}
 	statusCode, _, err := r.httpCheck(ctx, monitoring)
 	if err != nil {
-		return monitor.StatusDown, nil, nil
+		observation.TransportError = stringPointer("http_transport_error")
+		return monitor.StatusDown, nil, nil, observation
 	}
 	httpStatusCode := intPointer(statusCode)
+	responseTime := roundMilliseconds(time.Since(start))
+	observation.HTTPStatusCode = httpStatusCode
+	observation.ResponseTime = &responseTime
 	if statusCode >= http.StatusOK && statusCode < http.StatusBadRequest {
-		responseTime := roundMilliseconds(time.Since(start))
-		return monitor.StatusUp, &responseTime, httpStatusCode
+		return monitor.StatusUp, &responseTime, httpStatusCode, observation
 	}
-	return monitor.StatusDown, nil, httpStatusCode
+	return monitor.StatusDown, nil, httpStatusCode, observation
 }
 
 func (r *MonitoringService) handleKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
+	status, responseTime, httpStatusCode, _ := r.observeKeywordMonitoring(ctx, monitoring)
+	return status, responseTime, httpStatusCode
+}
+
+func (r *MonitoringService) observeKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int, monitor.RawObservation) {
 	start := time.Now()
+	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: start.UTC()}
 	statusCode, body, err := r.httpCheck(ctx, monitoring)
 	if err != nil {
-		return monitor.StatusDown, nil, nil
+		observation.TransportError = stringPointer("http_transport_error")
+		observation.KeywordMatched = boolPointer(false)
+		return monitor.StatusDown, nil, nil, observation
 	}
 	httpStatusCode := intPointer(statusCode)
-	if strings.Contains(body, monitoring.Keyword) {
-		responseTime := roundMilliseconds(time.Since(start))
-		return monitor.StatusUp, &responseTime, httpStatusCode
+	responseTime := roundMilliseconds(time.Since(start))
+	matched := strings.Contains(body, monitoring.Keyword)
+	observation.HTTPStatusCode = httpStatusCode
+	observation.ResponseTime = &responseTime
+	observation.KeywordMatched = boolPointer(matched)
+	if matched {
+		return monitor.StatusUp, &responseTime, httpStatusCode, observation
 	}
-	return monitor.StatusDown, nil, httpStatusCode
+	return monitor.StatusDown, nil, httpStatusCode, observation
 }
 
 func (r *MonitoringService) httpCheck(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
@@ -405,12 +426,21 @@ func (r *MonitoringService) egressPolicy() target.EgressPolicy {
 }
 
 func handlePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy, executor PingCommandExecutor) (monitor.Status, *float64) {
+	status, responseTime, _ := observePingMonitoring(ctx, monitoring, policy, executor)
+	return status, responseTime
+}
+
+func observePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy, executor PingCommandExecutor) (monitor.Status, *float64, monitor.RawObservation) {
+	start := time.Now()
+	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: start.UTC(), Connected: boolPointer(false)}
 	host, err := target.Host(monitoring.Target)
 	if err != nil {
-		return monitor.StatusDown, nil
+		observation.TransportError = stringPointer("invalid_target")
+		return monitor.StatusDown, nil, observation
 	}
 	if err := target.ValidateHost(ctx, host, policy); err != nil {
-		return monitor.StatusDown, nil
+		observation.TransportError = stringPointer("target_rejected")
+		return monitor.StatusDown, nil, observation
 	}
 
 	timeoutSeconds := fixedPingTimeoutSeconds
@@ -418,21 +448,23 @@ func handlePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, po
 		timeoutSeconds = monitoring.Timeout
 	}
 
-	start := time.Now()
 	if executor == nil {
 		executor = runPingCommand
 	}
 	output, err := executor(ctx, host, timeoutSeconds)
 	responseTime := parsePingLatency(output)
+	if err != nil {
+		observation.TransportError = stringPointer("ping_failed")
+		return monitor.StatusDown, nil, observation
+	}
+
 	if responseTime == nil {
 		elapsed := roundMilliseconds(time.Since(start))
 		responseTime = &elapsed
 	}
-	if err != nil {
-		return monitor.StatusDown, responseTime
-	}
-
-	return monitor.StatusUp, responseTime
+	observation.Connected = boolPointer(true)
+	observation.ResponseTime = responseTime
+	return monitor.StatusUp, responseTime, observation
 }
 
 func runPingCommand(ctx context.Context, host string, timeoutSeconds int) ([]byte, error) {
@@ -479,26 +511,42 @@ func parsePingLatency(output []byte) *float64 {
 }
 
 func handlePortMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy) (monitor.Status, *float64) {
+	status, responseTime, _ := observePortMonitoring(ctx, monitoring, policy)
+	return status, responseTime
+}
+
+func observePortMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy) (monitor.Status, *float64, monitor.RawObservation) {
+	start := time.Now()
+	observation := monitor.RawObservation{
+		Type:       monitoring.Type,
+		ObservedAt: start.UTC(),
+		Connected:  boolPointer(false),
+		Metadata:   map[string]string{"port": strconv.Itoa(monitoring.Port)},
+	}
 	if monitoring.Port <= 0 {
-		return monitor.StatusDown, nil
+		observation.TransportError = stringPointer("invalid_port")
+		return monitor.StatusDown, nil, observation
 	}
 
 	address, err := target.TCPAddress(monitoring.Target, monitoring.Port)
 	if err != nil {
-		return monitor.StatusDown, nil
+		observation.TransportError = stringPointer("invalid_target")
+		return monitor.StatusDown, nil, observation
 	}
 
-	start := time.Now()
 	dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	conn, err := target.SafeDialContext(policy)(dialCtx, "tcp", address)
 	if err != nil {
-		return monitor.StatusDown, nil
+		observation.TransportError = stringPointer("connection_failed")
+		return monitor.StatusDown, nil, observation
 	}
 	_ = conn.Close()
 
 	responseTime := roundMilliseconds(time.Since(start))
-	return monitor.StatusUp, &responseTime
+	observation.Connected = boolPointer(true)
+	observation.ResponseTime = &responseTime
+	return monitor.StatusUp, &responseTime, observation
 }
 
 func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
@@ -757,6 +805,14 @@ func roundMilliseconds(duration time.Duration) float64 {
 }
 
 func intPointer(value int) *int {
+	return &value
+}
+
+func boolPointer(value bool) *bool {
+	return &value
+}
+
+func stringPointer(value string) *string {
 	return &value
 }
 
