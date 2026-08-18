@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -593,45 +594,120 @@ func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring m
 	attempts := retryTimes + 1
 	delay := fixedHTTPRetryDelay
 
+	var firstResponse *httpCheckResult
 	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		var requestBody io.Reader
-		if len(body) > 0 {
-			requestBody = bytes.NewReader(body)
-		}
-
-		request, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), targetURL.String(), requestBody)
-		if err != nil {
-			return 0, "", err
-		}
-
-		for key, value := range headers {
-			request.Header.Set(key, value)
-		}
-		if monitoring.AuthUsername != "" && monitoring.AuthPassword != "" {
-			request.SetBasicAuth(monitoring.AuthUsername, monitoring.AuthPassword)
-		}
-
-		response, err := httpClient.Do(request)
-		if err != nil {
-			lastErr = err
-			if attempt < attempts-1 {
-				time.Sleep(delay)
-				continue
+	for _, candidateURL := range httpTargetVariants(targetURL) {
+		for attempt := 0; attempt < attempts; attempt++ {
+			result, err := performHTTPCheck(ctx, httpClient, method, candidateURL, headers, body, monitoring)
+			if err != nil {
+				lastErr = err
+				if attempt < attempts-1 {
+					time.Sleep(delay)
+					continue
+				}
+				break
 			}
-			return 0, "", lastErr
-		}
 
-		payload, err := readLimitedBody(response.Body, fixedHTTPMaxResponseBytes)
-		_ = response.Body.Close()
-		if err != nil {
-			return 0, "", err
+			if firstResponse == nil {
+				firstResponse = &result
+			}
+			if result.statusCode >= http.StatusOK && result.statusCode < http.StatusBadRequest {
+				return result.statusCode, result.body, nil
+			}
+			break
 		}
-
-		return response.StatusCode, string(payload), nil
 	}
 
+	if firstResponse != nil {
+		return firstResponse.statusCode, firstResponse.body, nil
+	}
 	return 0, "", lastErr
+}
+
+type httpCheckResult struct {
+	statusCode int
+	body       string
+}
+
+func performHTTPCheck(ctx context.Context, client *http.Client, method string, targetURL *url.URL, headers map[string]string, body []byte, monitoring monitor.Monitoring) (httpCheckResult, error) {
+	var requestBody io.Reader
+	if len(body) > 0 {
+		requestBody = bytes.NewReader(body)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), targetURL.String(), requestBody)
+	if err != nil {
+		return httpCheckResult{}, err
+	}
+
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	if monitoring.AuthUsername != "" && monitoring.AuthPassword != "" {
+		request.SetBasicAuth(monitoring.AuthUsername, monitoring.AuthPassword)
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		return httpCheckResult{}, err
+	}
+	defer response.Body.Close()
+
+	payload, err := readLimitedBody(response.Body, fixedHTTPMaxResponseBytes)
+	if err != nil {
+		return httpCheckResult{}, err
+	}
+
+	return httpCheckResult{statusCode: response.StatusCode, body: string(payload)}, nil
+}
+
+func httpTargetVariants(targetURL *url.URL) []*url.URL {
+	variants := make([]*url.URL, 0, 4)
+	seen := make(map[string]struct{}, 4)
+
+	hostnames := []string{targetURL.Hostname()}
+	if alternateHostname := alternateWWWHostname(targetURL.Hostname()); alternateHostname != "" {
+		hostnames = append(hostnames, alternateHostname)
+	}
+
+	paths := []string{targetURL.Path}
+	if targetURL.Path == "" {
+		paths = append(paths, "/")
+	} else if targetURL.Path == "/" {
+		paths = append(paths, "")
+	}
+
+	for _, path := range paths {
+		for _, hostname := range hostnames {
+			variant := *targetURL
+			if hostname != targetURL.Hostname() {
+				variant.Host = hostname
+				if port := targetURL.Port(); port != "" {
+					variant.Host = net.JoinHostPort(hostname, port)
+				}
+			}
+			variant.Path = path
+
+			if _, exists := seen[variant.String()]; exists {
+				continue
+			}
+			seen[variant.String()] = struct{}{}
+			variants = append(variants, &variant)
+		}
+	}
+
+	return variants
+}
+
+func alternateWWWHostname(hostname string) string {
+	if hostname == "" || net.ParseIP(hostname) != nil || !strings.Contains(strings.TrimSuffix(hostname, "."), ".") {
+		return ""
+	}
+
+	if len(hostname) > len("www.") && strings.EqualFold(hostname[:len("www.")], "www.") {
+		return hostname[len("www."):]
+	}
+	return "www." + hostname
 }
 
 func (r *MonitoringService) crawlMonitoringSSL(ctx context.Context, monitoring monitor.Monitoring) monitor.SSLResultPayload {

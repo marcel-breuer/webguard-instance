@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -84,6 +85,82 @@ func TestNormalizeBody(t *testing.T) {
 	body = normalizeBody("invalid-json")
 	if string(body) != "[]" {
 		t.Fatalf("expected fallback body [] for invalid JSON string, got %s", string(body))
+	}
+}
+
+func TestHTTPTargetVariants(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		target string
+		want   []string
+	}{
+		{
+			name:   "domain without www and slash",
+			target: "https://example.com",
+			want: []string{
+				"https://example.com",
+				"https://www.example.com",
+				"https://example.com/",
+				"https://www.example.com/",
+			},
+		},
+		{
+			name:   "domain with www and slash",
+			target: "https://www.example.com/",
+			want: []string{
+				"https://www.example.com/",
+				"https://example.com/",
+				"https://www.example.com",
+				"https://example.com",
+			},
+		},
+		{
+			name:   "non root path remains unchanged",
+			target: "https://example.com/health",
+			want: []string{
+				"https://example.com/health",
+				"https://www.example.com/health",
+			},
+		},
+		{
+			name:   "IP address has no www variant",
+			target: "http://192.0.2.1:8080",
+			want: []string{
+				"http://192.0.2.1:8080",
+				"http://192.0.2.1:8080/",
+			},
+		},
+		{
+			name:   "bare hostname has no www variant",
+			target: "http://localhost:8080",
+			want: []string{
+				"http://localhost:8080",
+				"http://localhost:8080/",
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsed, err := url.Parse(testCase.target)
+			if err != nil {
+				t.Fatalf("parse target: %v", err)
+			}
+
+			variants := httpTargetVariants(parsed)
+			got := make([]string, 0, len(variants))
+			for _, variant := range variants {
+				got = append(got, variant.String())
+			}
+			if !slices.Equal(got, testCase.want) {
+				t.Fatalf("unexpected variants: got %#v want %#v", got, testCase.want)
+			}
+		})
 	}
 }
 
@@ -392,6 +469,40 @@ func TestHandleHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
 	}
 	if *httpStatusCode != http.StatusMovedPermanently {
 		t.Fatalf("expected http status code 301, got %d", *httpStatusCode)
+	}
+}
+
+func TestHandleHTTPMonitoringTreatsRedirectToLocalizedPathAsUp(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/":
+			http.Redirect(writer, request, "/de", http.StatusFound)
+		case "/de":
+			writer.WriteHeader(http.StatusOK)
+			_, _ = writer.Write([]byte("localized content"))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	status, responseTime, httpStatusCode := r.handleHTTPMonitoring(context.Background(), monitor.Monitoring{
+		Target:     server.URL,
+		Timeout:    2,
+		HTTPMethod: monitor.HTTPMethodGet,
+	})
+
+	if status != monitor.StatusUp {
+		t.Fatalf("expected up after redirect to localized path, got %s", status)
+	}
+	if responseTime == nil {
+		t.Fatal("expected response time after redirect")
+	}
+	if httpStatusCode == nil || *httpStatusCode != http.StatusOK {
+		t.Fatalf("expected final HTTP status 200, got %#v", httpStatusCode)
 	}
 }
 
