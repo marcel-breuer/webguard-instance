@@ -55,15 +55,17 @@ func (f HTTPCheckFunc) Check(ctx context.Context, monitoring monitor.Monitoring)
 }
 
 type MonitoringService struct {
-	client       application.MonitoringGateway
-	cfg          config.Config
-	logger       *log.Logger
-	domainLookup DomainLookup
-	dnsChecker   *DNSRecordChecker
-	pingExecutor PingCommandExecutor
-	httpChecker  HTTPChecker
-	executors    *executorRegistry
-	telemetry    *application.Telemetry
+	client          application.MonitoringGateway
+	cfg             config.Config
+	logger          *log.Logger
+	domainLookup    DomainLookup
+	dnsChecker      *DNSRecordChecker
+	pingExecutor    PingCommandExecutor
+	httpChecker     HTTPChecker
+	executors       *executorRegistry
+	telemetry       *application.Telemetry
+	now             func() time.Time
+	responseCadence *responseCadence
 }
 
 func New(client application.MonitoringGateway, cfg config.Config, logger *log.Logger) *MonitoringService {
@@ -78,13 +80,15 @@ func NewWithTelemetry(client application.MonitoringGateway, cfg config.Config, l
 		telemetry = application.NewTelemetry()
 	}
 	service := &MonitoringService{
-		client:       client,
-		cfg:          cfg,
-		logger:       logger,
-		domainLookup: domainlookup.New(10 * time.Second),
-		dnsChecker:   NewDNSRecordChecker(nil, logger),
-		pingExecutor: runPingCommand,
-		telemetry:    telemetry,
+		client:          client,
+		cfg:             cfg,
+		logger:          logger,
+		domainLookup:    domainlookup.New(10 * time.Second),
+		dnsChecker:      NewDNSRecordChecker(nil, logger),
+		pingExecutor:    runPingCommand,
+		telemetry:       telemetry,
+		now:             time.Now,
+		responseCadence: newResponseCadence(),
 	}
 	service.httpChecker = HTTPCheckFunc(service.performHTTPRequest)
 	service.executors = service.newExecutorRegistry()
@@ -106,6 +110,7 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 	}
 
 	dispatched := 0
+	skippedCadence := 0
 	skippedMaintenance := 0
 	skippedUnsupported := 0
 
@@ -118,6 +123,11 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
+				if !r.responseCadence.tryStart(monitoring, r.cfg.WebGuardLocation, r.now()) {
+					r.logger.Printf("Skipping response monitoring until its next cadence window (monitoring_id=%s interval_seconds=%d)", monitoring.ID, monitoring.CheckIntervalSeconds)
+					continue
+				}
+
 				release, err := application.AcquireExecutionSlot(ctx)
 				if err != nil {
 					r.logger.Printf("Response monitoring canceled before execution (monitoring_id=%s): %v", monitoring.ID, err)
@@ -148,6 +158,11 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 			continue
 		}
 
+		if !isScheduledResponseWindow(monitoring.ID, r.cfg.WebGuardLocation, responseCheckInterval(monitoring), r.now()) {
+			skippedCadence++
+			continue
+		}
+
 		if monitoring.MaintenanceActive {
 			skippedMaintenance++
 			r.publishExecution(ctx, maintenanceExecution(PhaseResponse, monitoring.ID))
@@ -161,9 +176,10 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 	workers.Wait()
 
 	r.logger.Printf(
-		"Response monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d skipped_unsupported=%d",
+		"Response monitoring dispatch done. total=%d dispatched=%d skipped_cadence=%d skipped_maintenance=%d skipped_unsupported=%d",
 		len(monitorings),
 		dispatched,
+		skippedCadence,
 		skippedMaintenance,
 		skippedUnsupported,
 	)

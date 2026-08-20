@@ -56,6 +56,41 @@ func TestMonitoringUnmarshalWithStringID(t *testing.T) {
 	}
 }
 
+func TestMonitoringUnmarshalCheckIntervalSeconds(t *testing.T) {
+	t.Parallel()
+
+	var monitoring Monitoring
+	err := json.Unmarshal([]byte(`{
+		"id":"monitoring-1",
+		"type":"http",
+		"target":"https://example.com",
+		"timeout":10,
+		"check_interval_seconds":900
+	}`), &monitoring)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if monitoring.CheckIntervalSeconds != 900 {
+		t.Fatalf("expected 900 seconds, got %d", monitoring.CheckIntervalSeconds)
+	}
+}
+
+func TestMonitoringUnmarshalRejectsNegativeCheckIntervalSeconds(t *testing.T) {
+	t.Parallel()
+
+	var monitoring Monitoring
+	err := json.Unmarshal([]byte(`{
+		"id":"monitoring-1",
+		"type":"http",
+		"target":"https://example.com",
+		"timeout":10,
+		"check_interval_seconds":-1
+	}`), &monitoring)
+	if err == nil {
+		t.Fatal("expected negative check_interval_seconds to be rejected")
+	}
+}
+
 func TestMonitoringUnmarshalPreferredLocationFallback(t *testing.T) {
 	t.Parallel()
 

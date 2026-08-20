@@ -27,7 +27,8 @@ The current package boundaries and dependency rule are documented in
   - Docker-first local and production setup
   - Liveness: `GET /livez`; readiness: `GET /readyz`; Prometheus metrics: `GET /metrics`
 - **Predictable Scheduling**
-  - Combined monitoring run every 5 minutes
+  - Infrastructure checks keep the five-minute dispatcher cadence
+  - HTTP and keyword website checks run at least 15 minutes apart per monitoring and location
 
 ## Getting Started
 
@@ -107,6 +108,12 @@ Runtime settings:
 - `PORT` (default: `8080`)
 
 See `.env.example` for full defaults.
+
+Core supplies `check_interval_seconds` with each monitoring. The worker honors
+that per-monitoring minimum start-to-start interval for regular response checks
+and reports the executed value with the result. HTTP and keyword checks currently
+use 900 seconds; other active checks retain the documented Core cadence. A
+delayed worker run may execute later, never sooner.
 
 The contract and rollout sequence for horizontally scaled workers are in
 [the monitoring job lease protocol](JOB_LEASE_PROTOCOL.md).

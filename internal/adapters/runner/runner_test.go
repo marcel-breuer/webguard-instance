@@ -516,6 +516,65 @@ func TestRunResponsePostsHTTPStatusCodeForHTTPAndKeywordMonitoring(t *testing.T)
 	}
 }
 
+func TestRunResponseHonorsWebsiteCheckCadenceAndReportsTheExecutedInterval(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{responseMonitorings: []monitor.Monitoring{
+		{ID: "website-monitoring", Type: monitor.TypeHTTP, Target: "https://example.com", CheckIntervalSeconds: 900},
+		{ID: "ping-monitoring", Type: monitor.TypePing, Target: "127.0.0.1", CheckIntervalSeconds: 300},
+	}}
+	runner := New(client, config.Config{WebGuardLocation: "de-1", QueueDefaultWorkers: 1, AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
+		return http.StatusOK, "", nil
+	})
+	runner.pingExecutor = func(context.Context, string, int) ([]byte, error) {
+		return []byte("time=1 ms"), nil
+	}
+
+	website := client.responseMonitorings[0]
+	firstRun := nextDueResponseWindow(website, "de-1", time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC))
+	runner.now = func() time.Time { return firstRun }
+	if err := runner.runResponse(context.Background()); err != nil {
+		t.Fatalf("first run failed: %v", err)
+	}
+
+	runner.now = func() time.Time { return firstRun.Add(5 * time.Minute) }
+	if err := runner.runResponse(context.Background()); err != nil {
+		t.Fatalf("second run failed: %v", err)
+	}
+
+	runner.now = func() time.Time { return firstRun.Add(15 * time.Minute) }
+	if err := runner.runResponse(context.Background()); err != nil {
+		t.Fatalf("third run failed: %v", err)
+	}
+
+	responses := client.snapshotPostedResponses()
+	if len(responses) != 5 {
+		t.Fatalf("expected 5 responses (website twice, ping three times), got %d", len(responses))
+	}
+
+	websiteChecks := 0
+	pingChecks := 0
+	for _, response := range responses {
+		switch response.MonitoringID {
+		case "website-monitoring":
+			websiteChecks++
+			if response.CheckIntervalSeconds == nil || *response.CheckIntervalSeconds != 900 {
+				t.Fatalf("expected website interval 900, got %#v", response.CheckIntervalSeconds)
+			}
+		case "ping-monitoring":
+			pingChecks++
+			if response.CheckIntervalSeconds == nil || *response.CheckIntervalSeconds != 300 {
+				t.Fatalf("expected ping interval 300, got %#v", response.CheckIntervalSeconds)
+			}
+		}
+	}
+
+	if websiteChecks != 2 || pingChecks != 3 {
+		t.Fatalf("unexpected cadence counts: website=%d ping=%d", websiteChecks, pingChecks)
+	}
+}
+
 func payloadType(monitoringID string) monitor.Type {
 	if monitoringID == "keyword-monitoring" {
 		return monitor.TypeKeyword
