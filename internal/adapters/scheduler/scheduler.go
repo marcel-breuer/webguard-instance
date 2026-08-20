@@ -18,7 +18,7 @@ func RunEveryFiveMinutes(ctx context.Context, logger *log.Logger, task func(cont
 			if err := task(ctx); err != nil && logger != nil {
 				logger.Printf("Scheduled run failed: %v", err)
 			}
-			timer.Reset(5 * time.Minute)
+			timer.Reset(time.Until(nextFiveMinuteBoundary(time.Now())))
 		}
 	}
 }

@@ -70,7 +70,12 @@ func (r *executorRegistry) Execute(ctx context.Context, phase ExecutionPhase, mo
 	if !ok {
 		return Execution{}, false
 	}
-	return executor.Execute(ctx, monitoring), true
+	execution := executor.Execute(ctx, monitoring)
+	if execution.Response != nil && monitoring.CheckIntervalSeconds > 0 {
+		interval := monitoring.CheckIntervalSeconds
+		execution.Response.CheckIntervalSeconds = &interval
+	}
+	return execution, true
 }
 
 func (r *executorRegistry) find(phase ExecutionPhase, monitoringType monitor.Type) (Executor, bool) {

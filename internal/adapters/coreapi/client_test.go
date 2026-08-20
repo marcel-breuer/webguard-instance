@@ -417,6 +417,33 @@ func TestPostMonitoringResponsePayloadIncludesHTTPStatusCode(t *testing.T) {
 	}
 }
 
+func TestPostMonitoringResponsePayloadIncludesExecutedCheckInterval(t *testing.T) {
+	t.Parallel()
+
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode payload: %v", err)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	interval := 900
+	client := NewClient(server.URL, "secret-key", "de-1")
+	err := client.PostMonitoringResponse(context.Background(), monitor.MonitoringResponsePayload{
+		MonitoringID:         "42",
+		Status:               monitor.StatusUp,
+		CheckIntervalSeconds: &interval,
+	})
+	if err != nil {
+		t.Fatalf("PostMonitoringResponse failed: %v", err)
+	}
+	if body["check_interval_seconds"] != float64(900) {
+		t.Fatalf("expected check_interval_seconds=900, got %#v", body["check_interval_seconds"])
+	}
+}
+
 func TestPostMonitoringResponsePayloadIncludesRawObservation(t *testing.T) {
 	t.Parallel()
 

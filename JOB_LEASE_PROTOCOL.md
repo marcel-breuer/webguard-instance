@@ -18,7 +18,10 @@ the location code.
 | Extend | `POST {instance API base path}/monitoring-jobs/{job_id}/extend` | `attempt` | Returns the new `lease_expires_at` when a long-running check needs more time |
 | Release | `POST {instance API base path}/monitoring-jobs/{job_id}/release` | `attempt` and a machine-readable reason | Makes a job eligible for later placement without recording a result |
 
-`phase` is one of `response`, `ssl`, or `domain_expiration`. This makes the
+`phase` is one of `response`, `ssl`, or `domain_expiration`. A monitoring
+snapshot includes `check_interval_seconds`; Core remains authoritative for job
+due time in lease mode and must not issue response work before that minimum
+start-to-start interval for the monitoring/location. This makes the
 existing response and certificate checks for one monitoring separate schedulable
 jobs. Core must assign at most one unexpired lease for a job. It may return a
 mixed batch and must cap it at the lesser of its own backpressure limit,

@@ -49,6 +49,8 @@ type Monitoring struct {
 
 	Timeout int `json:"timeout"`
 
+	CheckIntervalSeconds int `json:"check_interval_seconds"`
+
 	HTTPMethod  HTTPMethod `json:"http_method"`
 	HTTPBody    any        `json:"http_body"`
 	HTTPHeaders any        `json:"http_headers"`
@@ -81,6 +83,8 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 		Target string `json:"target"`
 
 		Timeout any `json:"timeout"`
+
+		CheckIntervalSeconds any `json:"check_interval_seconds"`
 
 		HTTPMethod  HTTPMethod `json:"http_method"`
 		HTTPBody    any        `json:"http_body"`
@@ -116,6 +120,13 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return err
 	}
+	checkIntervalSeconds, err := parseIntFlexible(raw.CheckIntervalSeconds, "check_interval_seconds")
+	if err != nil {
+		return err
+	}
+	if checkIntervalSeconds < 0 {
+		return fmt.Errorf("check_interval_seconds must not be negative")
+	}
 	port, err := parseIntFlexible(raw.Port, "port")
 	if err != nil {
 		return err
@@ -148,6 +159,8 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 
 		Timeout: timeout,
 
+		CheckIntervalSeconds: checkIntervalSeconds,
+
 		HTTPMethod:  raw.HTTPMethod,
 		HTTPBody:    raw.HTTPBody,
 		HTTPHeaders: raw.HTTPHeaders,
@@ -172,11 +185,12 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 }
 
 type MonitoringResponsePayload struct {
-	MonitoringID   string          `json:"monitoring_id"`
-	Status         Status          `json:"status"`
-	ResponseTime   *float64        `json:"response_time"`
-	HTTPStatusCode *int            `json:"http_status_code"`
-	Observation    *RawObservation `json:"observation,omitempty"`
+	MonitoringID         string          `json:"monitoring_id"`
+	Status               Status          `json:"status"`
+	ResponseTime         *float64        `json:"response_time"`
+	HTTPStatusCode       *int            `json:"http_status_code"`
+	CheckIntervalSeconds *int            `json:"check_interval_seconds,omitempty"`
+	Observation          *RawObservation `json:"observation,omitempty"`
 }
 
 // RawObservation contains the evidence used by Core to derive availability
