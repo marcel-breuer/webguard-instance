@@ -37,9 +37,8 @@ statuses, and result payloads. These types do not depend on transports.
 
 ## Adapters
 
-- `adapters/coreapi` implements Core instance-contract `v1`. It owns the
-  configurable target (`/api/v1/internal/instances`) and legacy
-  (`/api/v1/internal`) base paths so runner code cannot access UI routes.
+- `adapters/coreapi` implements the Core instance contract. It owns the
+  `/api/instances` base path so runner code cannot access browser routes.
 - `adapters/health` provides liveness HTTP handlers and graceful server
   shutdown, readiness, and a Prometheus-compatible operations endpoint.
 - `adapters/runner` registers independent HTTP, keyword, ping, TCP, DNS, TLS,
