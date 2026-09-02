@@ -1,8 +1,7 @@
 # Monitoring observation contract
 
 This document defines the additive scanner-to-Core payload used by issue #42.
-It applies to `POST /api/v1/internal/instances/monitoring-responses` and the
-legacy equivalent `POST /api/v1/internal/monitoring-responses`.
+It applies to `POST /api/instances/monitoring-responses`.
 
 ## Compatibility
 
