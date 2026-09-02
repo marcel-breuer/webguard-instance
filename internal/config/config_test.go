@@ -32,7 +32,7 @@ func TestFromEnvDefaults(t *testing.T) {
 	if cfg.RunMaxConcurrency != 3 {
 		t.Fatalf("expected default max concurrency 3, got %d", cfg.RunMaxConcurrency)
 	}
-	if cfg.WebGuardInstanceAPIBasePath != "/api/instances" {
+	if cfg.WebGuardInstanceAPIBasePath != "/api/v1/internal/instances" {
 		t.Fatalf("expected default instance API base path, got %q", cfg.WebGuardInstanceAPIBasePath)
 	}
 	if cfg.AllowPrivateTargets {
@@ -54,7 +54,7 @@ func TestFromEnvCustomValues(t *testing.T) {
 	t.Setenv("BIND_ADDRESS", "127.0.0.1:9191")
 	t.Setenv("WEBGUARD_CORE_API_KEY", "key")
 	t.Setenv("WEBGUARD_CORE_API_URL", "https://core.example.com")
-	t.Setenv("WEBGUARD_INSTANCE_API_BASE_PATH", "/api/instances")
+	t.Setenv("WEBGUARD_INSTANCE_API_BASE_PATH", "/api/v1/internal")
 	t.Setenv("WEBGUARD_LOCATION", "de-1")
 	t.Setenv("WEBGUARD_INSTANCE_ID", "worker-de-1-a")
 	t.Setenv("QUEUE_DEFAULT_WORKERS", "7")
@@ -76,7 +76,7 @@ func TestFromEnvCustomValues(t *testing.T) {
 	if cfg.WebGuardCoreAPIURL != "https://core.example.com" {
 		t.Fatalf("unexpected core url: %q", cfg.WebGuardCoreAPIURL)
 	}
-	if cfg.WebGuardInstanceAPIBasePath != "/api/instances" {
+	if cfg.WebGuardInstanceAPIBasePath != "/api/v1/internal" {
 		t.Fatalf("unexpected instance API base path: %q", cfg.WebGuardInstanceAPIBasePath)
 	}
 	if cfg.WebGuardLocation != "de-1" {
@@ -108,9 +108,9 @@ func TestFromEnvCustomValues(t *testing.T) {
 func TestConfigReadinessRequiresCoreConfigurationAndLeaseIdentity(t *testing.T) {
 	t.Parallel()
 
-	ready := Config{WebGuardCoreAPIKey: "key", WebGuardCoreAPIURL: "https://core.example.test", WebGuardInstanceAPIBasePath: "/api/instances", WebGuardLocation: "de-1"}
+	ready := Config{WebGuardCoreAPIKey: "key", WebGuardCoreAPIURL: "https://core.example.test", WebGuardInstanceAPIBasePath: "/api/v1/internal/instances", WebGuardLocation: "de-1"}
 	if !ready.IsReady() {
-		t.Fatal("expected instance configuration to be ready")
+		t.Fatal("expected legacy configuration to be ready")
 	}
 	if (Config{WebGuardCoreAPIKey: "key", WebGuardLocation: "de-1"}).IsReady() {
 		t.Fatal("expected missing Core URL to be unready")
@@ -123,9 +123,9 @@ func TestConfigReadinessRequiresCoreConfigurationAndLeaseIdentity(t *testing.T) 
 	if !ready.IsReady() {
 		t.Fatal("expected complete lease configuration to be ready")
 	}
-	ready.WebGuardInstanceAPIBasePath = "/api/v1/internal/instances"
+	ready.WebGuardInstanceAPIBasePath = "/api/v1/internal/ui"
 	if ready.IsReady() {
-		t.Fatal("expected legacy path to be rejected for an instance")
+		t.Fatal("expected UI path to be rejected for an instance")
 	}
 }
 

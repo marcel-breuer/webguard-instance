@@ -275,11 +275,11 @@ When finishing test-related work, report which Docker commands were run, whether
 
 ## API and Integration Rules
 
-- WebGuard Core instance endpoints currently used by this worker are:
-  - `GET /api/instances/monitorings`
-  - `POST /api/instances/monitoring-responses`
-  - `POST /api/instances/ssl-results`
-  - `POST /api/instances/domain-results`
+- WebGuard Core internal endpoints currently used by this worker are:
+  - `GET /api/v1/internal/monitorings`
+  - `POST /api/v1/internal/monitoring-responses`
+  - `POST /api/v1/internal/ssl-results`
+  - `POST /api/v1/internal/domain-results`
 - Health endpoints are `GET /` and `GET /health`; other methods return `405`.
 - Preserve request headers, JSON field names, status handling, and timeout behavior unless the task explicitly changes the contract.
 - Use test servers or fakes for Core API behavior in tests.

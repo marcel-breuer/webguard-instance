@@ -2,7 +2,7 @@
 
 This protocol lets multiple WebGuard Instances serve the same location without
 deliberately executing one active monitoring job twice. It is versioned by its
-Core instance contract at `/api/instances` and is opt-in in the instance through
+Core instance-contract `v1` path and is opt-in in the instance through
 `WEBGUARD_JOB_LEASES_ENABLED`.
 
 ## Core contract
