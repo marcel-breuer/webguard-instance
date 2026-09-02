@@ -1213,14 +1213,14 @@ func TestRunDomainExpirationUsesCoreAPIEndpoints(t *testing.T) {
 		}
 
 		switch {
-		case request.Method == http.MethodGet && request.URL.Path == "/api/instances/monitorings":
+		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/internal/instances/monitorings":
 			if request.URL.Query().Get("location") != "de-1" || request.URL.Query().Get("type") != "domain_expiration" {
 				http.Error(writer, "unexpected query", http.StatusBadRequest)
 				return
 			}
 			writer.Header().Set("Content-Type", "application/json")
 			_, _ = writer.Write([]byte(`[{"id":"domain-api","type":"domain_expiration","target":"example.com","maintenance_active":false}]`))
-		case request.Method == http.MethodPost && request.URL.Path == "/api/instances/monitoring-responses":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/internal/instances/monitoring-responses":
 			var payload monitor.MonitoringResponsePayload
 			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 				http.Error(writer, err.Error(), http.StatusBadRequest)
@@ -1228,7 +1228,7 @@ func TestRunDomainExpirationUsesCoreAPIEndpoints(t *testing.T) {
 			}
 			responseCh <- payload
 			writer.WriteHeader(http.StatusNoContent)
-		case request.Method == http.MethodPost && request.URL.Path == "/api/instances/domain-results":
+		case request.Method == http.MethodPost && request.URL.Path == "/api/v1/internal/instances/domain-results":
 			var payload monitor.DomainResultPayload
 			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 				http.Error(writer, err.Error(), http.StatusBadRequest)

@@ -31,7 +31,7 @@ func FromEnv() Config {
 	return Config{
 		WebGuardCoreAPIKey:          env("WEBGUARD_CORE_API_KEY", ""),
 		WebGuardCoreAPIURL:          env("WEBGUARD_CORE_API_URL", ""),
-		WebGuardInstanceAPIBasePath: env("WEBGUARD_INSTANCE_API_BASE_PATH", "/api/instances"),
+		WebGuardInstanceAPIBasePath: env("WEBGUARD_INSTANCE_API_BASE_PATH", "/api/v1/internal/instances"),
 		WebGuardLocation:            env("WEBGUARD_LOCATION", ""),
 		WebGuardInstanceID:          env("WEBGUARD_INSTANCE_ID", ""),
 
@@ -59,7 +59,7 @@ func (c Config) IsReady() bool {
 
 func isSupportedInstanceAPIBasePath(path string) bool {
 	normalized := "/" + strings.Trim(strings.TrimSpace(path), "/")
-	return normalized == "/api/instances"
+	return normalized == "/api/v1/internal/instances" || normalized == "/api/v1/internal"
 }
 
 func env(key, fallback string) string {

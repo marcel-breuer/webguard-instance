@@ -18,7 +18,12 @@ import (
 const (
 	maxResponseBodyBytes = 4 << 20
 
-	DefaultInstanceAPIBasePath = "/api/instances"
+	// SupportedContractVersion is the versioned Core instance contract from
+	// WebGuard Core #593. The path is independently configurable during its
+	// documented compatibility window.
+	SupportedContractVersion   = "v1"
+	DefaultInstanceAPIBasePath = "/api/v1/internal/instances"
+	LegacyInstanceAPIBasePath  = "/api/v1/internal"
 )
 
 type Client struct {
@@ -284,7 +289,7 @@ func (c *Client) instanceAPIEndpoint(suffix string) string {
 func normalizeInstanceAPIPath(instanceAPIPath string) (string, error) {
 	normalized := "/" + strings.Trim(strings.TrimSpace(instanceAPIPath), "/")
 	switch normalized {
-	case DefaultInstanceAPIBasePath:
+	case DefaultInstanceAPIBasePath, LegacyInstanceAPIBasePath:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported WEBGUARD_INSTANCE_API_BASE_PATH %q", instanceAPIPath)
