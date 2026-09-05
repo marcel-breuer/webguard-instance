@@ -68,10 +68,6 @@ type MonitoringService struct {
 	responseCadence *responseCadence
 }
 
-func New(client application.MonitoringGateway, cfg config.Config, logger *log.Logger) *MonitoringService {
-	return NewWithTelemetry(client, cfg, logger, application.NewTelemetry())
-}
-
 func NewWithTelemetry(client application.MonitoringGateway, cfg config.Config, logger *log.Logger, telemetry *application.Telemetry) *MonitoringService {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
@@ -373,19 +369,6 @@ func (r *MonitoringService) logFetchError(err error) {
 	}
 }
 
-func (r *MonitoringService) crawlResponseMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
-	execution, ok := r.executors.Execute(ctx, PhaseResponse, monitoring)
-	if !ok || execution.Response == nil {
-		return monitor.StatusUnknown, nil, nil
-	}
-	return execution.Response.Status, execution.Response.ResponseTime, execution.Response.HTTPStatusCode
-}
-
-func (r *MonitoringService) handleHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
-	status, responseTime, httpStatusCode, _ := r.observeHTTPMonitoring(ctx, monitoring)
-	return status, responseTime, httpStatusCode
-}
-
 func (r *MonitoringService) observeHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int, monitor.RawObservation) {
 	start := time.Now()
 	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: start.UTC()}
@@ -402,11 +385,6 @@ func (r *MonitoringService) observeHTTPMonitoring(ctx context.Context, monitorin
 		return monitor.StatusUp, &responseTime, httpStatusCode, observation
 	}
 	return monitor.StatusDown, nil, httpStatusCode, observation
-}
-
-func (r *MonitoringService) handleKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int) {
-	status, responseTime, httpStatusCode, _ := r.observeKeywordMonitoring(ctx, monitoring)
-	return status, responseTime, httpStatusCode
 }
 
 func (r *MonitoringService) observeKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int, monitor.RawObservation) {
@@ -440,11 +418,6 @@ func (r *MonitoringService) httpCheck(ctx context.Context, monitoring monitor.Mo
 
 func (r *MonitoringService) egressPolicy() target.EgressPolicy {
 	return target.EgressPolicy{AllowPrivate: r.cfg.AllowPrivateTargets}
-}
-
-func handlePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy, executor PingCommandExecutor) (monitor.Status, *float64) {
-	status, responseTime, _ := observePingMonitoring(ctx, monitoring, policy, executor)
-	return status, responseTime
 }
 
 func observePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy, executor PingCommandExecutor) (monitor.Status, *float64, monitor.RawObservation) {
@@ -525,11 +498,6 @@ func parsePingLatency(output []byte) *float64 {
 
 	rounded := math.Round(parsed*1000) / 1000
 	return &rounded
-}
-
-func handlePortMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy) (monitor.Status, *float64) {
-	status, responseTime, _ := observePortMonitoring(ctx, monitoring, policy)
-	return status, responseTime
 }
 
 func observePortMonitoring(ctx context.Context, monitoring monitor.Monitoring, policy target.EgressPolicy) (monitor.Status, *float64, monitor.RawObservation) {

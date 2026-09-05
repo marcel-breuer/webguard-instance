@@ -168,7 +168,7 @@ func TestHTTPAndKeywordExecutorsShareInjectedHTTPChecker(t *testing.T) {
 	t.Parallel()
 
 	var calls []monitor.Type
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	r.httpChecker = HTTPCheckFunc(func(_ context.Context, monitoring monitor.Monitoring) (int, string, error) {
 		calls = append(calls, monitoring.Type)
 		return http.StatusOK, "expected keyword", nil
@@ -192,7 +192,7 @@ func TestHTTPAndKeywordExecutorsShareInjectedHTTPChecker(t *testing.T) {
 func TestResponseExecutorsPreserveFailureEvidenceWithoutResponseTime(t *testing.T) {
 	t.Parallel()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	r.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
 		return 0, "", errors.New("connection refused")
 	})
@@ -279,7 +279,7 @@ func TestPerformHTTPRequestGETWithHeadersAndBasicAuth(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	statusCode, body, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:       server.URL,
 		Timeout:      2,
@@ -302,7 +302,7 @@ func TestPerformHTTPRequestGETWithHeadersAndBasicAuth(t *testing.T) {
 func TestPerformHTTPRequestRejectsPrivateTargetsByDefault(t *testing.T) {
 	t.Parallel()
 
-	r := New(nil, config.Config{}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{}, log.New(io.Discard, "", 0))
 	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     "http://127.0.0.1:8080",
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -320,7 +320,7 @@ func TestPerformHTTPRequestAllowsPrivateTargetsWhenConfigured(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	statusCode, body, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
@@ -342,7 +342,7 @@ func TestPerformHTTPRequestRejectsOversizedResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
@@ -361,7 +361,7 @@ func TestPerformHTTPRequestRejectsSelfSignedTLS(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
@@ -397,7 +397,7 @@ func TestPerformHTTPRequestPOSTBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	statusCode, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
@@ -426,7 +426,7 @@ func TestPerformHTTPRequestFollowsRedirectAcrossHosts(t *testing.T) {
 	}))
 	defer redirectServer.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	statusCode, body, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     redirectServer.URL,
 		Timeout:    2,
@@ -443,7 +443,7 @@ func TestPerformHTTPRequestFollowsRedirectAcrossHosts(t *testing.T) {
 	}
 }
 
-func TestHandleHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
+func TestObserveHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
 	t.Parallel()
 
 	redirectOnlyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -451,8 +451,8 @@ func TestHandleHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
 	}))
 	defer redirectOnlyServer.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	status, responseTime, httpStatusCode := r.handleHTTPMonitoring(context.Background(), monitor.Monitoring{
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	status, responseTime, httpStatusCode, _ := r.observeHTTPMonitoring(context.Background(), monitor.Monitoring{
 		Target:     redirectOnlyServer.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -472,7 +472,7 @@ func TestHandleHTTPMonitoringTreatsRedirectStatusAsUp(t *testing.T) {
 	}
 }
 
-func TestHandleHTTPMonitoringTreatsRedirectToLocalizedPathAsUp(t *testing.T) {
+func TestObserveHTTPMonitoringTreatsRedirectToLocalizedPathAsUp(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -488,8 +488,8 @@ func TestHandleHTTPMonitoringTreatsRedirectToLocalizedPathAsUp(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	status, responseTime, httpStatusCode := r.handleHTTPMonitoring(context.Background(), monitor.Monitoring{
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	status, responseTime, httpStatusCode, _ := r.observeHTTPMonitoring(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -506,7 +506,7 @@ func TestHandleHTTPMonitoringTreatsRedirectToLocalizedPathAsUp(t *testing.T) {
 	}
 }
 
-func TestHandleKeywordMonitoringReturnsHTTPStatusCodeWhenKeywordMissing(t *testing.T) {
+func TestObserveKeywordMonitoringReturnsHTTPStatusCodeWhenKeywordMissing(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -515,8 +515,8 @@ func TestHandleKeywordMonitoringReturnsHTTPStatusCodeWhenKeywordMissing(t *testi
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	status, responseTime, httpStatusCode := r.handleKeywordMonitoring(context.Background(), monitor.Monitoring{
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	status, responseTime, httpStatusCode, _ := r.observeKeywordMonitoring(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -540,7 +540,7 @@ func TestHandleKeywordMonitoringReturnsHTTPStatusCodeWhenKeywordMissing(t *testi
 func TestPerformHTTPRequestRetriesOnTransportError(t *testing.T) {
 	t.Parallel()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	start := time.Now()
 	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     "http://127.0.0.1:1",
@@ -555,7 +555,7 @@ func TestPerformHTTPRequestRetriesOnTransportError(t *testing.T) {
 	}
 }
 
-func TestHandlePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
+func TestObservePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
 	testCases := []struct {
 		name   string
 		target string
@@ -576,7 +576,7 @@ func TestHandlePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
 				return []byte("64 bytes from " + host + ": icmp_seq=1 ttl=57 time=12.34 ms"), nil
 			})
 
-			status, responseTime := handlePingMonitoring(context.Background(), monitor.Monitoring{
+			status, responseTime, _ := observePingMonitoring(context.Background(), monitor.Monitoring{
 				Target:  testCase.target,
 				Timeout: 2,
 			}, target.EgressPolicy{AllowPrivate: true}, executor)
@@ -600,12 +600,12 @@ func TestHandlePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
 	}
 }
 
-func TestHandlePingMonitoringDown(t *testing.T) {
+func TestObservePingMonitoringDown(t *testing.T) {
 	executor := PingCommandExecutor(func(_ context.Context, _ string, _ int) ([]byte, error) {
 		return []byte("100% packet loss"), errors.New("exit status 1")
 	})
 
-	status, responseTime := handlePingMonitoring(context.Background(), monitor.Monitoring{
+	status, responseTime, _ := observePingMonitoring(context.Background(), monitor.Monitoring{
 		Target: "8.8.8.8",
 	}, target.EgressPolicy{AllowPrivate: true}, executor)
 	if status != monitor.StatusDown {
@@ -659,10 +659,10 @@ func TestBuildPingCommand(t *testing.T) {
 	}
 }
 
-func TestHandlePortMonitoringDown(t *testing.T) {
+func TestObservePortMonitoringDown(t *testing.T) {
 	t.Parallel()
 
-	status, responseTime := handlePortMonitoring(context.Background(), monitor.Monitoring{
+	status, responseTime, _ := observePortMonitoring(context.Background(), monitor.Monitoring{
 		Target: "127.0.0.1",
 		Port:   1,
 	}, target.EgressPolicy{AllowPrivate: true})
@@ -674,25 +674,22 @@ func TestHandlePortMonitoringDown(t *testing.T) {
 	}
 }
 
-func TestCrawlResponseMonitoringUnknownType(t *testing.T) {
+func TestExecutorRegistryRejectsUnknownResponseType(t *testing.T) {
 	t.Parallel()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	status, responseTime, httpStatusCode := r.crawlResponseMonitoring(context.Background(), monitor.Monitoring{
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	execution, ok := r.executors.Execute(context.Background(), PhaseResponse, monitor.Monitoring{
 		Type: monitor.Type("custom"),
 	})
-	if status != monitor.StatusUnknown {
-		t.Fatalf("expected unknown status, got %s", status)
+	if ok {
+		t.Fatal("expected unknown monitoring type to be rejected")
 	}
-	if responseTime != nil {
-		t.Fatalf("expected nil response time for unknown type")
-	}
-	if httpStatusCode != nil {
-		t.Fatalf("expected nil http status code for unknown type")
+	if execution.Response != nil {
+		t.Fatalf("expected no response execution for unknown type: %#v", execution.Response)
 	}
 }
 
-func TestCrawlResponseMonitoringPortReturnsNilHTTPStatusCode(t *testing.T) {
+func TestExecutorRegistryExecutesPortResponse(t *testing.T) {
 	t.Parallel()
 
 	server, err := net.Listen("tcp", "127.0.0.1:0")
@@ -719,17 +716,20 @@ func TestCrawlResponseMonitoringPortReturnsNilHTTPStatusCode(t *testing.T) {
 		}
 	}()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	status, _, httpStatusCode := r.crawlResponseMonitoring(context.Background(), monitor.Monitoring{
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	execution, ok := r.executors.Execute(context.Background(), PhaseResponse, monitor.Monitoring{
 		Type:   monitor.TypePort,
 		Target: "127.0.0.1",
 		Port:   port,
 	})
-
-	if status != monitor.StatusUp {
-		t.Fatalf("expected up status for open port, got %s", status)
+	if !ok || execution.Response == nil {
+		t.Fatalf("expected port response execution, got %#v", execution)
 	}
-	if httpStatusCode != nil {
+
+	if execution.Response.Status != monitor.StatusUp {
+		t.Fatalf("expected up status for open port, got %s", execution.Response.Status)
+	}
+	if execution.Response.HTTPStatusCode != nil {
 		t.Fatalf("expected nil http status code for port monitoring")
 	}
 
@@ -923,28 +923,31 @@ func TestNormalizeDNSRecordValues(t *testing.T) {
 	}
 }
 
-func TestCrawlResponseMonitoringDNSRecordReturnsNilHTTPStatusCode(t *testing.T) {
+func TestExecutorRegistryExecutesDNSRecordResponse(t *testing.T) {
 	t.Parallel()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	r.dnsChecker = NewDNSRecordChecker(&staticDNSRecordResolver{
 		values: []string{"target.example.com."},
 	}, log.New(io.Discard, "", 0))
 
-	status, responseTime, httpStatusCode := r.crawlResponseMonitoring(context.Background(), monitor.Monitoring{
+	execution, ok := r.executors.Execute(context.Background(), PhaseResponse, monitor.Monitoring{
 		Type:              monitor.TypeDNSRecord,
 		Target:            "example.com",
 		DNSRecordType:     "CNAME",
 		DNSExpectedValues: []string{"target.example.com"},
 	})
-
-	if status != monitor.StatusUp {
-		t.Fatalf("expected up, got %s", status)
+	if !ok || execution.Response == nil {
+		t.Fatalf("expected DNS response execution, got %#v", execution)
 	}
-	if responseTime == nil {
+
+	if execution.Response.Status != monitor.StatusUp {
+		t.Fatalf("expected up, got %s", execution.Response.Status)
+	}
+	if execution.Response.ResponseTime == nil {
 		t.Fatalf("expected response time")
 	}
-	if httpStatusCode != nil {
+	if execution.Response.HTTPStatusCode != nil {
 		t.Fatalf("expected nil http status code for dns_record monitoring")
 	}
 }
@@ -957,7 +960,7 @@ func TestCrawlMonitoringSSLRejectsSelfSignedCertificate(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	payload := r.crawlMonitoringSSL(context.Background(), monitor.Monitoring{
 		ID:     "12",
 		Target: server.URL,
@@ -991,7 +994,7 @@ func TestRunSSLPostsResults(t *testing.T) {
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}
-	r := New(client, cfg, log.New(io.Discard, "", 0))
+	r := newTestService(client, cfg, log.New(io.Discard, "", 0))
 	if err := r.runSSL(context.Background()); err != nil {
 		t.Fatalf("runSSL failed: %v", err)
 	}
@@ -1024,7 +1027,7 @@ func TestRunDomainExpirationPostsUpResponseAndMetadata(t *testing.T) {
 		},
 	}
 
-	r := New(client, config.Config{
+	r := newTestService(client, config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}, log.New(io.Discard, "", 0))
@@ -1086,7 +1089,7 @@ func TestRunDomainExpirationExpiringWithinThirtyDaysIsDown(t *testing.T) {
 		},
 	}
 
-	r := New(client, config.Config{
+	r := newTestService(client, config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}, log.New(io.Discard, "", 0))
@@ -1132,7 +1135,7 @@ func TestRunDomainExpirationTemporaryLookupFailurePostsUnknownOnly(t *testing.T)
 		},
 	}
 
-	r := New(client, config.Config{
+	r := newTestService(client, config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}, log.New(io.Discard, "", 0))
@@ -1170,7 +1173,7 @@ func TestRunDomainExpirationMaintenancePostsUnknownWithoutLookup(t *testing.T) {
 		},
 	}
 
-	r := New(client, config.Config{
+	r := newTestService(client, config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}, log.New(io.Discard, "", 0))
@@ -1242,7 +1245,7 @@ func TestRunDomainExpirationUsesCoreAPIEndpoints(t *testing.T) {
 	}))
 	defer server.Close()
 
-	r := New(coreapi.NewClient(server.URL, "secret-key", "de-1"), config.Config{
+	r := newTestService(coreapi.NewClient(server.URL, "secret-key", "de-1"), config.Config{
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}, log.New(io.Discard, "", 0))
@@ -1281,7 +1284,7 @@ func TestLogFetchErrorIncludesStatusBody(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
-	r := New(nil, config.Config{}, log.New(&logs, "", 0))
+	r := newTestService(nil, config.Config{}, log.New(&logs, "", 0))
 
 	r.logFetchError(&coreapi.HTTPStatusError{
 		StatusCode: http.StatusForbidden,

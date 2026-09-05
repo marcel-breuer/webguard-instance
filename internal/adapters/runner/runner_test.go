@@ -13,9 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcel-breuer/webguard-instance/internal/application"
 	"github.com/marcel-breuer/webguard-instance/internal/config"
 	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
 )
+
+func newTestService(client application.MonitoringGateway, cfg config.Config, logger *log.Logger) *MonitoringService {
+	return NewWithTelemetry(client, cfg, logger, application.NewTelemetry())
+}
 
 type getMonitoringsCall struct {
 	location string
@@ -190,7 +195,7 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 			},
 		},
 	}}
-	runner := New(client, config.Config{
+	runner := newTestService(client, config.Config{
 		WebGuardLocation:    "de-1",
 		WebGuardInstanceID:  "worker-de-1-a",
 		JobLeasesEnabled:    true,
@@ -266,7 +271,7 @@ func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {
 		QueueDefaultWorkers: 1,
 		AllowPrivateTargets: true,
 	}
-	runner := New(client, cfg, log.New(io.Discard, "", 0))
+	runner := newTestService(client, cfg, log.New(io.Discard, "", 0))
 
 	if err := runner.RunMonitoring(context.Background()); err != nil {
 		t.Fatalf("RunMonitoring failed: %v", err)
@@ -351,7 +356,7 @@ func TestRunMonitoringRequestsNonPingTypesForSSL(t *testing.T) {
 		WebGuardLocation:    "us-1",
 		QueueDefaultWorkers: 1,
 	}
-	runner := New(client, cfg, log.New(io.Discard, "", 0))
+	runner := newTestService(client, cfg, log.New(io.Discard, "", 0))
 
 	if err := runner.RunMonitoring(context.Background()); err != nil {
 		t.Fatalf("RunMonitoring failed: %v", err)
@@ -418,7 +423,7 @@ func TestRunMonitoringSkipsHeartbeatMonitoringsWithoutPostingResults(t *testing.
 		QueueDefaultWorkers: 1,
 		AllowPrivateTargets: true,
 	}
-	runner := New(client, cfg, log.New(&logs, "", 0))
+	runner := newTestService(client, cfg, log.New(&logs, "", 0))
 
 	if err := runner.RunMonitoring(context.Background()); err != nil {
 		t.Fatalf("RunMonitoring failed: %v", err)
@@ -474,7 +479,7 @@ func TestRunResponsePostsHTTPStatusCodeForHTTPAndKeywordMonitoring(t *testing.T)
 		QueueDefaultWorkers: 1,
 		AllowPrivateTargets: true,
 	}
-	runner := New(client, cfg, log.New(io.Discard, "", 0))
+	runner := newTestService(client, cfg, log.New(io.Discard, "", 0))
 
 	if err := runner.runResponse(context.Background()); err != nil {
 		t.Fatalf("runResponse failed: %v", err)
@@ -523,7 +528,7 @@ func TestRunResponseHonorsWebsiteCheckCadenceAndReportsTheExecutedInterval(t *te
 		{ID: "website-monitoring", Type: monitor.TypeHTTP, Target: "https://example.com", CheckIntervalSeconds: 900},
 		{ID: "ping-monitoring", Type: monitor.TypePing, Target: "127.0.0.1", CheckIntervalSeconds: 300},
 	}}
-	runner := New(client, config.Config{WebGuardLocation: "de-1", QueueDefaultWorkers: 1, AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	runner := newTestService(client, config.Config{WebGuardLocation: "de-1", QueueDefaultWorkers: 1, AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
 		return http.StatusOK, "", nil
 	})
@@ -602,7 +607,7 @@ func TestRunResponsePostsDNSRecordResultWithNilHTTPStatusCode(t *testing.T) {
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}
-	runner := New(client, cfg, log.New(io.Discard, "", 0))
+	runner := newTestService(client, cfg, log.New(io.Discard, "", 0))
 	runner.dnsChecker = NewDNSRecordChecker(&staticDNSRecordResolver{
 		values: []string{"192.0.2.10"},
 	}, log.New(io.Discard, "", 0))
@@ -694,7 +699,7 @@ func TestRunMonitoringRunsPhasesInParallel(t *testing.T) {
 		WebGuardLocation:    "de-1",
 		QueueDefaultWorkers: 1,
 	}
-	runner := New(client, cfg, log.New(io.Discard, "", 0))
+	runner := newTestService(client, cfg, log.New(io.Discard, "", 0))
 
 	done := make(chan struct{})
 	go func() {

@@ -28,7 +28,7 @@ func (r *blockingRunner) RunMonitoring(ctx context.Context) error {
 func TestExecutionControllerSkipsOverlappingRun(t *testing.T) {
 	t.Parallel()
 	runner := &blockingRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
-	controller := NewExecutionController(runner, nil, 1)
+	controller := NewExecutionControllerWithTelemetry(runner, nil, 1, NewTelemetry())
 	done := make(chan error, 1)
 	go func() { done <- controller.RunMonitoring(context.Background()) }()
 	<-runner.started
@@ -62,7 +62,7 @@ func TestAcquireExecutionSlotHonorsCancellation(t *testing.T) {
 func TestExecutionControllerDrainStopsNewRunsAndWaitsForActiveRun(t *testing.T) {
 	t.Parallel()
 	runner := &blockingRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
-	controller := NewExecutionController(runner, nil, 1)
+	controller := NewExecutionControllerWithTelemetry(runner, nil, 1, NewTelemetry())
 	done := make(chan error, 1)
 	go func() { done <- controller.RunMonitoring(context.Background()) }()
 	<-runner.started
