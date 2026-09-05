@@ -63,7 +63,7 @@ The current package boundaries and dependency rule are documented in
 
    Production-style:
    ```bash
-   ./start-prod.sh
+   docker compose -f compose.yml up -d --build
    ```
 
 4. **Verify health**
@@ -144,7 +144,7 @@ enabled by default.
 ## CI/CD
 
 - `.github/workflows/ci.yml`
-  - formatting, linting, tests, binary build, container build check
+  - formatting, vet, tests, binary build, container build check
 - `.github/workflows/docker-image.yml`
   - multi-arch image build and publish to GHCR on `main` and `v*` tags
-  - `CHANGELOG.md` and GitHub release notes generation for `v*` tags
+  - release notes generation and `CHANGELOG.md` updates for `v*` tags

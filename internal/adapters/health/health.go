@@ -5,13 +5,7 @@ import (
 	"log"
 	"net/http"
 	"time"
-
-	"github.com/marcel-breuer/webguard-instance/internal/application"
 )
-
-func Start(ctx context.Context, address string, logger *log.Logger) error {
-	return StartWithHandler(ctx, address, logger, HealthHandler())
-}
 
 func StartWithHandler(ctx context.Context, address string, logger *log.Logger, handler http.Handler) error {
 	server := &http.Server{
@@ -36,8 +30,4 @@ func StartWithHandler(ctx context.Context, address string, logger *log.Logger, h
 		return nil
 	}
 	return err
-}
-
-func HealthHandler() http.Handler {
-	return NewHandler(ReadinessFunc(func() bool { return true }), application.NewTelemetry())
 }

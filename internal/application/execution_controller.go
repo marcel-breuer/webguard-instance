@@ -37,10 +37,6 @@ type RunSummary struct {
 	Err        error
 }
 
-func NewExecutionController(runner MonitoringRunner, logger *log.Logger, maxConcurrency int) *ExecutionController {
-	return NewExecutionControllerWithTelemetry(runner, logger, maxConcurrency, NewTelemetry())
-}
-
 func NewExecutionControllerWithTelemetry(runner MonitoringRunner, logger *log.Logger, maxConcurrency int, telemetry *Telemetry) *ExecutionController {
 	if maxConcurrency < 1 {
 		maxConcurrency = 1

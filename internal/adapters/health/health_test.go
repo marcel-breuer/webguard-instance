@@ -13,13 +13,13 @@ import (
 	"github.com/marcel-breuer/webguard-instance/internal/application"
 )
 
-func TestHealthHandlerGet(t *testing.T) {
+func TestNewHandlerGet(t *testing.T) {
 	t.Parallel()
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	recorder := httptest.NewRecorder()
 
-	HealthHandler().ServeHTTP(recorder, request)
+	NewHandler(ReadinessFunc(func() bool { return true }), application.NewTelemetry()).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", recorder.Code)
@@ -29,13 +29,13 @@ func TestHealthHandlerGet(t *testing.T) {
 	}
 }
 
-func TestHealthHandlerHealthGet(t *testing.T) {
+func TestNewHandlerHealthGet(t *testing.T) {
 	t.Parallel()
 
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	recorder := httptest.NewRecorder()
 
-	HealthHandler().ServeHTTP(recorder, request)
+	NewHandler(ReadinessFunc(func() bool { return true }), application.NewTelemetry()).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", recorder.Code)
@@ -45,13 +45,13 @@ func TestHealthHandlerHealthGet(t *testing.T) {
 	}
 }
 
-func TestHealthHandlerMethodNotAllowed(t *testing.T) {
+func TestNewHandlerMethodNotAllowed(t *testing.T) {
 	t.Parallel()
 
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	recorder := httptest.NewRecorder()
 
-	HealthHandler().ServeHTTP(recorder, request)
+	NewHandler(ReadinessFunc(func() bool { return true }), application.NewTelemetry()).ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected status 405, got %d", recorder.Code)
@@ -93,7 +93,7 @@ func TestStartShutsDownOnContextCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- Start(ctx, "127.0.0.1:0", log.New(io.Discard, "", 0))
+		done <- StartWithHandler(ctx, "127.0.0.1:0", log.New(io.Discard, "", 0), NewHandler(ReadinessFunc(func() bool { return true }), application.NewTelemetry()))
 	}()
 
 	time.Sleep(50 * time.Millisecond)
