@@ -6,16 +6,27 @@ on:
       - main
     tags:
       - "v*"
+    paths:
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '**.go'
   workflow_dispatch:
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   publish:
     name: Build and Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
