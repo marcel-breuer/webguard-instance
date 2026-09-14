@@ -160,7 +160,9 @@ enabled by default.
 ## CI/CD
 
 - `.github/workflows/ci.yml`
-  - formatting, vet, tests, binary build, container build check
+  - formatting, vet, tests, binary build, and a pull-request container build check
+  - runs only when Go or container configuration changes; superseded pull-request runs are cancelled
 - `.github/workflows/docker-image.yml`
-  - multi-arch image build and publish to GHCR on `main` and `v*` tags
+  - multi-arch image build and publish to GHCR for image-relevant `main` changes and `v*` tags
+  - owns production image builds for `main` so CI does not rebuild the same image
   - release notes generation and `CHANGELOG.md` updates for `v*` tags
