@@ -1,8 +1,64 @@
 version: 2
-updates:
-  - package-ecosystem: gomod
-    directory: /
+
+multi-ecosystem-groups:
+  all-dependencies:
     schedule:
       interval: monthly
       time: "00:00"
       timezone: Europe/Berlin
+    assignees:
+      - marcel-breuer
+
+updates:
+  - package-ecosystem: "gomod"
+    directory: /
+    patterns:
+      - "*"
+    multi-ecosystem-group: all-dependencies
+    open-pull-requests-limit: 1
+    assignees:
+      - marcel-breuer
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+  - package-ecosystem: "github-actions"
+    directory: /
+    patterns:
+      - "*"
+    multi-ecosystem-group: all-dependencies
+    open-pull-requests-limit: 1
+    assignees:
+      - marcel-breuer
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+  - package-ecosystem: "docker"
+    directory: /
+    patterns:
+      - "*"
+    multi-ecosystem-group: all-dependencies
+    open-pull-requests-limit: 1
+    assignees:
+      - marcel-breuer
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+  - package-ecosystem: "docker-compose"
+    directory: /
+    patterns:
+      - "*"
+    multi-ecosystem-group: all-dependencies
+    open-pull-requests-limit: 1
+    assignees:
+      - marcel-breuer
+    groups:
+      security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
