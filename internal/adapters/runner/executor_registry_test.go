@@ -69,3 +69,25 @@ func TestExecutorRegistryExecutesOnlyMatchingPhaseAndType(t *testing.T) {
 		t.Fatalf("expected phase mismatch to remain unhandled")
 	}
 }
+
+func TestExecutorRegistryBoundsMonitoringTimeout(t *testing.T) {
+	t.Parallel()
+
+	gotTimeout := 0
+	registry := newExecutorRegistry(functionExecutor{
+		name:            "http",
+		phase:           PhaseResponse,
+		monitoringTypes: []monitor.Type{monitor.TypeHTTP},
+		execute: func(_ context.Context, monitoring monitor.Monitoring) Execution {
+			gotTimeout = monitoring.Timeout
+			return responseExecution(monitoring.ID, monitor.StatusUp, nil, nil)
+		},
+	})
+
+	_, ok := registry.Execute(context.Background(), PhaseResponse, monitor.Monitoring{
+		ID: "http-1", Type: monitor.TypeHTTP, Timeout: 600,
+	})
+	if !ok || gotTimeout != 60 {
+		t.Fatalf("expected an untrusted timeout to be capped at 60 seconds, got supported=%t timeout=%d", ok, gotTimeout)
+	}
+}

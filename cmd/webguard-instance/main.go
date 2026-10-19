@@ -28,6 +28,7 @@ func main() {
 	cfg := config.FromEnv()
 	telemetry := application.NewTelemetry()
 	coreClient := coreapi.NewClientWithInstanceAPIPath(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation, cfg.WebGuardInstanceAPIBasePath)
+	coreClient.SetAPIKeyFile(cfg.WebGuardCoreAPIKeyFile)
 	coreClient.SetTelemetry(telemetry)
 	service := application.NewExecutionControllerWithTelemetry(runner.NewWithTelemetry(coreClient, cfg, logger, telemetry), logger, cfg.RunMaxConcurrency, telemetry)
 
@@ -45,7 +46,12 @@ func run(args []string, logger *log.Logger, cfg config.Config, service monitorin
 	case "serve":
 		return serve(logger, service, cfg)
 	case "monitoring":
-		_ = service.RunMonitoring(context.Background())
+		if err := service.RunMonitoring(context.Background()); err != nil {
+			if logger != nil {
+				logger.Printf("Monitoring command failed: %v", err)
+			}
+			return 1
+		}
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", command)
@@ -88,7 +94,7 @@ func runServe(logger *log.Logger, service monitoringService, cfg config.Config) 
 		}()
 	}
 
-	go scheduler.RunEveryFiveMinutes(dispatchContext, logger, service.RunMonitoring)
+	go scheduler.RunEveryFiveMinutesWithTelemetry(dispatchContext, logger, telemetry, service.RunMonitoring)
 
 	if err := health.StartWithHandler(healthContext, cfg.Address, logger, health.NewHandler(readiness, telemetry)); err != nil {
 		logger.Printf("Health server exited with error: %v", err)

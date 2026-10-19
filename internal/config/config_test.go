@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -9,6 +10,7 @@ func TestFromEnvDefaults(t *testing.T) {
 	t.Setenv("PORT", "")
 	t.Setenv("BIND_ADDRESS", "")
 	t.Setenv("WEBGUARD_CORE_API_KEY", "")
+	t.Setenv("WEBGUARD_CORE_API_KEY_FILE", "")
 	t.Setenv("WEBGUARD_CORE_API_URL", "")
 	t.Setenv("WEBGUARD_INSTANCE_API_BASE_PATH", "")
 	t.Setenv("WEBGUARD_LOCATION", "")
@@ -133,5 +135,36 @@ func TestFromEnvClampsShutdownDrainTimeout(t *testing.T) {
 	t.Setenv("SHUTDOWN_DRAIN_TIMEOUT_SECONDS", "0")
 	if cfg := FromEnv(); cfg.ShutdownDrainTimeout != time.Second {
 		t.Fatalf("expected one second minimum drain timeout, got %s", cfg.ShutdownDrainTimeout)
+	}
+}
+
+func TestFromEnvBoundsWorkerAndBatchConfiguration(t *testing.T) {
+	t.Setenv("QUEUE_DEFAULT_WORKERS", "999999")
+	t.Setenv("RUN_MAX_CONCURRENCY", "0")
+	t.Setenv("WEBGUARD_JOB_LEASE_MAX_BATCH", "999999")
+
+	cfg := FromEnv()
+	if cfg.QueueDefaultWorkers != maxQueueWorkers || cfg.RunMaxConcurrency != 1 || cfg.JobLeaseMaxBatch != maxJobLeaseBatch {
+		t.Fatalf("expected resource settings to be bounded, got workers=%d concurrency=%d batch=%d", cfg.QueueDefaultWorkers, cfg.RunMaxConcurrency, cfg.JobLeaseMaxBatch)
+	}
+}
+
+func TestConfigReadinessAcceptsMountedAPIKeyFile(t *testing.T) {
+	path := t.TempDir() + "/api-key"
+	if err := os.WriteFile(path, []byte("mounted-key\n"), 0o600); err != nil {
+		t.Fatalf("write API key file: %v", err)
+	}
+	cfg := Config{
+		WebGuardCoreAPIKeyFile:      path,
+		WebGuardCoreAPIURL:          "https://core.example.test",
+		WebGuardInstanceAPIBasePath: "/api/instances",
+		WebGuardLocation:            "de-1",
+	}
+	if !cfg.IsReady() {
+		t.Fatal("expected mounted API key file to make configuration ready")
+	}
+	cfg.WebGuardCoreAPIKeyFile = path + ".missing"
+	if cfg.IsReady() {
+		t.Fatal("expected missing API key file to be unready")
 	}
 }

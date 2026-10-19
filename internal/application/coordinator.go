@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"sync"
 )
@@ -30,28 +32,34 @@ func (c *Coordinator) Run(ctx context.Context) error {
 	}
 
 	type phaseResult struct {
-		name string
-		err  error
+		index int
+		name  string
+		err   error
 	}
 
 	results := make(chan phaseResult, len(c.phases))
 	var phases sync.WaitGroup
 	phases.Add(len(c.phases))
 
-	for _, phase := range c.phases {
+	for index, phase := range c.phases {
 		phase := phase
+		index := index
 		go func() {
 			defer phases.Done()
-			results <- phaseResult{name: phase.Name(), err: phase.Run(ctx)}
+			results <- phaseResult{index: index, name: phase.Name(), err: phase.Run(ctx)}
 		}()
 	}
 
 	phases.Wait()
 	close(results)
 
+	failures := make([]error, len(c.phases))
 	for result := range results {
 		if result.err != nil && c.logger != nil {
 			c.logger.Printf("%s monitoring phase failed: %v", result.name, result.err)
+		}
+		if result.err != nil {
+			failures[result.index] = fmt.Errorf("%s monitoring phase: %w", result.name, result.err)
 		}
 	}
 
@@ -59,5 +67,5 @@ func (c *Coordinator) Run(ctx context.Context) error {
 		c.logger.Println("All monitoring jobs have been dispatched successfully.")
 	}
 
-	return nil
+	return errors.Join(failures...)
 }

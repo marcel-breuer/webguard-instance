@@ -10,6 +10,20 @@ import (
 	"strings"
 )
 
+var blockedAddressRanges = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("fec0::/10"),
+}
+
 type EgressPolicy struct {
 	AllowPrivate bool
 }
@@ -49,6 +63,9 @@ func HTTPURL(ctx context.Context, rawTarget string, policy EgressPolicy) (*url.U
 	if target == "" {
 		return nil, fmt.Errorf("target is empty")
 	}
+	if len(target) > 4096 {
+		return nil, fmt.Errorf("target exceeds maximum length")
+	}
 	parsed, err := url.Parse(target)
 	if err != nil {
 		return nil, err
@@ -58,6 +75,9 @@ func HTTPURL(ctx context.Context, rawTarget string, policy EgressPolicy) (*url.U
 	}
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("target host is empty")
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("target URL must not contain credentials")
 	}
 	if err := ValidateHost(ctx, parsed.Hostname(), policy); err != nil {
 		return nil, err
@@ -123,18 +143,30 @@ func resolveHostIPs(ctx context.Context, host string, policy EgressPolicy) ([]ne
 }
 
 func isUnsafeAddress(addr netip.Addr) bool {
-	return addr.IsLoopback() ||
+	addr = addr.Unmap()
+	if addr.IsLoopback() ||
 		addr.IsPrivate() ||
 		addr.IsLinkLocalUnicast() ||
 		addr.IsLinkLocalMulticast() ||
 		addr.IsMulticast() ||
-		addr.IsUnspecified()
+		addr.IsUnspecified() {
+		return true
+	}
+	for _, network := range blockedAddressRanges {
+		if network.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractHostPort(rawTarget string) (string, string, error) {
 	target := strings.TrimSpace(rawTarget)
 	if target == "" {
 		return "", "", fmt.Errorf("target is empty")
+	}
+	if len(target) > 4096 {
+		return "", "", fmt.Errorf("target exceeds maximum length")
 	}
 
 	hostPort := target

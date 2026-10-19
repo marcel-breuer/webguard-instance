@@ -70,12 +70,24 @@ func (r *executorRegistry) Execute(ctx context.Context, phase ExecutionPhase, mo
 	if !ok {
 		return Execution{}, false
 	}
+	monitoring.Timeout = boundedMonitoringTimeout(monitoring.Timeout)
 	execution := executor.Execute(ctx, monitoring)
 	if execution.Response != nil && monitoring.CheckIntervalSeconds > 0 {
 		interval := monitoring.CheckIntervalSeconds
 		execution.Response.CheckIntervalSeconds = &interval
 	}
 	return execution, true
+}
+
+func boundedMonitoringTimeout(timeout int) int {
+	const maximumTimeoutSeconds = 60
+	if timeout < 0 {
+		return 0
+	}
+	if timeout > maximumTimeoutSeconds {
+		return maximumTimeoutSeconds
+	}
+	return timeout
 }
 
 func (r *executorRegistry) find(phase ExecutionPhase, monitoringType monitor.Type) (Executor, bool) {

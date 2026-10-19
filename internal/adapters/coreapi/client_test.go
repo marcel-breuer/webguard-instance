@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -470,6 +471,97 @@ func TestClaimMonitoringJobsRejectsInvalidWorkerRequest(t *testing.T) {
 	_, err = client.ClaimMonitoringJobs(context.Background(), monitor.ClaimMonitoringJobsRequest{Location: "de-1", InstanceID: "worker", Capacity: 0, MaxBatchSize: 1})
 	if err == nil || !strings.Contains(err.Error(), "capacity") {
 		t.Fatalf("expected invalid capacity error, got %v", err)
+	}
+}
+
+func TestAPIKeyFileIsRereadForCredentialRotation(t *testing.T) {
+	t.Parallel()
+
+	var keys []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		keys = append(keys, request.Header.Get("X-API-KEY"))
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	file, err := os.CreateTemp(t.TempDir(), "api-key")
+	if err != nil {
+		t.Fatalf("create API key file: %v", err)
+	}
+	keyPath := file.Name()
+	if _, err := file.WriteString("first-key\n"); err != nil {
+		t.Fatalf("write first API key: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close API key file: %v", err)
+	}
+
+	client := NewClient(server.URL, "fallback-key", "de-1")
+	client.SetAPIKeyFile(keyPath)
+	if _, err := client.GetMonitorings(context.Background(), "de-1", nil); err != nil {
+		t.Fatalf("first GetMonitorings failed: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("rotated-key\n"), 0o600); err != nil {
+		t.Fatalf("rotate API key: %v", err)
+	}
+	if _, err := client.GetMonitorings(context.Background(), "de-1", nil); err != nil {
+		t.Fatalf("second GetMonitorings failed: %v", err)
+	}
+	if len(keys) != 2 || keys[0] != "first-key" || keys[1] != "rotated-key" {
+		t.Fatalf("expected each request to use the current secret, got %#v", keys)
+	}
+}
+
+func TestNewRequestRejectsCredentialsInCoreURL(t *testing.T) {
+	t.Parallel()
+
+	client := NewClient("https://user:secret@core.example.test", "api-key", "de-1")
+	_, err := client.GetMonitorings(context.Background(), "de-1", nil)
+	if err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("expected credential-bearing Core URL to fail without exposing its value, got %v", err)
+	}
+}
+
+func TestClientDoesNotForwardInstanceKeyAcrossOrigins(t *testing.T) {
+	t.Parallel()
+
+	var leakedKey string
+	destination := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		leakedKey = request.Header.Get("X-API-KEY")
+	}))
+	defer destination.Close()
+
+	core := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		http.Redirect(writer, httptest.NewRequest(http.MethodGet, "/", nil), destination.URL+"/redirected", http.StatusTemporaryRedirect)
+	}))
+	defer core.Close()
+
+	client := NewClient(core.URL, "secret-key", "de-1")
+	_, err := client.GetMonitorings(context.Background(), "de-1", nil)
+	if err == nil {
+		t.Fatal("expected cross-origin Core redirect to fail")
+	}
+	if leakedKey != "" {
+		t.Fatalf("instance API key was forwarded to the redirect destination: %q", leakedKey)
+	}
+}
+
+func TestClaimMonitoringJobsRejectsOversizedResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"jobs":[{},{}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "secret-key", "de-1")
+	_, err := client.ClaimMonitoringJobs(context.Background(), monitor.ClaimMonitoringJobsRequest{
+		Location: "de-1", InstanceID: "worker", Capacity: 1, MaxBatchSize: 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "more jobs than") {
+		t.Fatalf("expected oversized claim response to be rejected, got %v", err)
 	}
 }
 

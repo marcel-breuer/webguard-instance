@@ -52,7 +52,7 @@ The current package boundaries and dependency rule are documented in
    ```
    Required values:
    - `WEBGUARD_LOCATION`
-   - `WEBGUARD_CORE_API_KEY`
+   - `WEBGUARD_CORE_API_KEY` or `WEBGUARD_CORE_API_KEY_FILE`
    - `WEBGUARD_CORE_API_URL`
 
 3. **Start services**
@@ -91,23 +91,37 @@ The current package boundaries and dependency rule are documented in
 Main integration settings:
 
 - `WEBGUARD_LOCATION` (instance code used for `location` query and `X-INSTANCE-CODE` header)
-- `WEBGUARD_CORE_API_KEY`
+- `WEBGUARD_CORE_API_KEY` or `WEBGUARD_CORE_API_KEY_FILE` (the mounted file takes precedence and is reread for each Core request)
 - `WEBGUARD_CORE_API_URL`
 - `WEBGUARD_INSTANCE_API_BASE_PATH` (default: `/api/instances`; only this Core instance route family is accepted)
 
 Runtime settings:
 
-- `QUEUE_DEFAULT_WORKERS` (default: `3`)
-- `RUN_MAX_CONCURRENCY` (default: `QUEUE_DEFAULT_WORKERS`; shared upper bound across all check phases)
+- `QUEUE_DEFAULT_WORKERS` (default: `3`; bounded to `1..64` workers)
+- `RUN_MAX_CONCURRENCY` (default: `QUEUE_DEFAULT_WORKERS`; shared upper bound across all check phases, bounded to `1..64`)
 - `WEBGUARD_JOB_LEASES_ENABLED` (default: `false`; use Core-issued leases instead of legacy polling)
 - `WEBGUARD_JOB_LEASES_DUAL_WRITE` (default: `false`; also post legacy result endpoints during a staged Core rollout)
 - `WEBGUARD_INSTANCE_ID` (required when leases are enabled; stable worker identity, distinct from its location)
-- `WEBGUARD_JOB_LEASE_MAX_BATCH` (default: `QUEUE_DEFAULT_WORKERS`; maximum jobs requested in one lease claim)
+- `WEBGUARD_JOB_LEASE_MAX_BATCH` (default: `QUEUE_DEFAULT_WORKERS`; maximum jobs requested in one lease claim, bounded to `256` and further limited to available workers)
 - `WEBGUARD_ALLOW_PRIVATE_TARGETS` (default: `false`; set to `true` only when this worker should monitor private, loopback, or link-local targets)
 - `SHUTDOWN_DRAIN_TIMEOUT_SECONDS` (default: `10`; drain deadline after `SIGTERM`)
 - `PORT` (default: `8080`)
 
 See `.env.example` for full defaults.
+
+The worker sends the API key only in the Core `X-API-KEY` header. It does not
+log the key or Core error response bodies, and it refuses credential-bearing
+Core URLs and cross-origin redirects. Use HTTPS for Core outside trusted local
+Docker networks. For rotation without restarting the worker, mount
+`WEBGUARD_CORE_API_KEY_FILE` and replace its contents atomically; when both key
+settings are present, the file takes precedence.
+
+Monitoring timeouts from Core are capped at 60 seconds. HTTP probes also cap
+request bodies at 1 MiB, headers at 64 entries and 32 KiB total, and response
+bodies at 2 MiB. The default egress policy rejects loopback, private, link-local,
+shared, documentation, benchmarking, reserved, and NAT64 addresses. Set
+`WEBGUARD_ALLOW_PRIVATE_TARGETS=true` only for a deployment that intentionally
+checks private targets.
 
 Production deployment and rollback guidance is documented in
 [the production instance runbook](PRODUCTION_RUNBOOK.md).
@@ -134,10 +148,19 @@ result callbacks and reuses it for bounded transport/5xx retries. The key is
 never included in the JSON payload and contains no target or credential data.
 
 For leased jobs, a valid Core-issued execution key is reused; older or missing
-lease keys are replaced with a worker-generated UUID v4. Independent executions
-receive different keys. Core can therefore replay an ambiguous callback safely
-without storing a duplicate observation or repeating its side effects. Older
-Core versions ignore the additive header and remain compatible.
+lease keys are rejected and released before execution so retries cannot create
+a new key. The same key is used for the result callback and lease completion.
+Duplicate job IDs in a claim batch are executed once. The worker keeps no local
+lease database; restart recovery depends on Core retaining the lease attempt and
+idempotency key, then making unfinished jobs claimable after expiry. Keep
+`WEBGUARD_JOB_LEASES_ENABLED=false` unless the configured Core implements that
+lease contract. Independent legacy executions receive different UUID v4 keys.
+
+The observable job path is `received → claimed → queued → running → completed`.
+Invalid jobs, cancellation, expiry, or failed lease renewal are counted as
+release transitions. The worker renews active leases before expiry; a renewal
+failure cancels the check so another worker can safely retry it. Core API
+request metrics include claim, extension, completion, and release latency.
 
 ## Operations
 
@@ -147,9 +170,10 @@ Core versions ignore the additive header and remain compatible.
   instance is not draining. It returns `503` during configuration errors and
   graceful shutdown.
 - `GET /metrics` exposes Prometheus text metrics for run duration and outcome,
-  active/queued leased jobs, bounded executor outcomes, Core request latency
-  and errors, and lease lifecycle events. It never labels metrics with targets,
-  credentials, monitoring IDs, or job IDs.
+  per-check duration, scheduler delay and run duration, lease wait, active/queued
+  jobs, bounded executor outcomes, Core request latency and errors, state
+  transitions, lease lifecycle events, goroutine count, and Go heap usage. It
+  never labels metrics with targets, credentials, monitoring IDs, or job IDs.
 
 On `SIGTERM` the instance stops scheduling new work, waits up to
 `SHUTDOWN_DRAIN_TIMEOUT_SECONDS` for active work to complete or relinquish its

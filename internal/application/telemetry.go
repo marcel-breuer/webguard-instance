@@ -1,6 +1,7 @@
 package application
 
 import (
+	"runtime"
 	"sync"
 	"time"
 )
@@ -10,13 +11,19 @@ import (
 type Telemetry struct {
 	mu sync.RWMutex
 
-	runs        map[string]uint64
-	runDuration DurationMetric
-	jobsActive  int64
-	jobsQueued  int64
-	executors   map[string]uint64
-	core        map[string]RequestMetric
-	leases      map[string]uint64
+	runs              map[string]uint64
+	runDuration       DurationMetric
+	jobsActive        int64
+	jobsQueued        int64
+	executors         map[string]uint64
+	jobDuration       map[string]DurationMetric
+	transitions       map[string]uint64
+	schedulerRuns     map[string]uint64
+	schedulerDelay    DurationMetric
+	schedulerDuration DurationMetric
+	leaseWait         DurationMetric
+	core              map[string]RequestMetric
+	leases            map[string]uint64
 }
 
 type DurationMetric struct {
@@ -31,21 +38,34 @@ type RequestMetric struct {
 }
 
 type TelemetrySnapshot struct {
-	Runs        map[string]uint64
-	RunDuration DurationMetric
-	JobsActive  int64
-	JobsQueued  int64
-	Executors   map[string]uint64
-	Core        map[string]RequestMetric
-	Leases      map[string]uint64
+	Runs              map[string]uint64
+	RunDuration       DurationMetric
+	JobsActive        int64
+	JobsQueued        int64
+	Executors         map[string]uint64
+	JobDuration       map[string]DurationMetric
+	Transitions       map[string]uint64
+	SchedulerRuns     map[string]uint64
+	SchedulerDelay    DurationMetric
+	SchedulerDuration DurationMetric
+	LeaseWait         DurationMetric
+	Core              map[string]RequestMetric
+	Leases            map[string]uint64
+	Goroutines        int
+	HeapAllocBytes    uint64
+	HeapInUseBytes    uint64
+	SysBytes          uint64
 }
 
 func NewTelemetry() *Telemetry {
 	return &Telemetry{
-		runs:      make(map[string]uint64),
-		executors: make(map[string]uint64),
-		core:      make(map[string]RequestMetric),
-		leases:    make(map[string]uint64),
+		runs:          make(map[string]uint64),
+		executors:     make(map[string]uint64),
+		jobDuration:   make(map[string]DurationMetric),
+		transitions:   make(map[string]uint64),
+		schedulerRuns: make(map[string]uint64),
+		core:          make(map[string]RequestMetric),
+		leases:        make(map[string]uint64),
 	}
 }
 
@@ -82,6 +102,10 @@ func (t *Telemetry) StartJob() {
 }
 
 func (t *Telemetry) FinishJob(phase, outcome string) {
+	t.FinishJobWithDuration(phase, outcome, 0)
+}
+
+func (t *Telemetry) FinishJobWithDuration(phase, outcome string, duration time.Duration) {
 	if t == nil {
 		return
 	}
@@ -90,6 +114,10 @@ func (t *Telemetry) FinishJob(phase, outcome string) {
 		t.jobsActive--
 	}
 	t.executors[phase+"/"+outcome]++
+	metric := t.jobDuration[phase]
+	metric.Count++
+	metric.Sum += duration
+	t.jobDuration[phase] = metric
 	t.mu.Unlock()
 }
 
@@ -102,6 +130,41 @@ func (t *Telemetry) DropQueuedJob(phase, outcome string) {
 		t.jobsQueued--
 	}
 	t.executors[phase+"/"+outcome]++
+	t.mu.Unlock()
+}
+
+func (t *Telemetry) RecordJobTransition(from, to string) {
+	if t == nil {
+		return
+	}
+	if from == "" {
+		from = "received"
+	}
+	t.mu.Lock()
+	t.transitions[from+"->"+to]++
+	t.mu.Unlock()
+}
+
+func (t *Telemetry) RecordSchedulerRun(delay, duration time.Duration, outcome string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.schedulerRuns[outcome]++
+	t.schedulerDelay.Count++
+	t.schedulerDelay.Sum += delay
+	t.schedulerDuration.Count++
+	t.schedulerDuration.Sum += duration
+	t.mu.Unlock()
+}
+
+func (t *Telemetry) RecordLeaseWait(duration time.Duration) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.leaseWait.Count++
+	t.leaseWait.Sum += duration
 	t.mu.Unlock()
 }
 
@@ -134,16 +197,30 @@ func (t *Telemetry) Snapshot() TelemetrySnapshot {
 		return TelemetrySnapshot{}
 	}
 	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return TelemetrySnapshot{
-		Runs:        cloneMap(t.runs),
-		RunDuration: t.runDuration,
-		JobsActive:  t.jobsActive,
-		JobsQueued:  t.jobsQueued,
-		Executors:   cloneMap(t.executors),
-		Core:        cloneRequests(t.core),
-		Leases:      cloneMap(t.leases),
+	snapshot := TelemetrySnapshot{
+		Runs:              cloneMap(t.runs),
+		RunDuration:       t.runDuration,
+		JobsActive:        t.jobsActive,
+		JobsQueued:        t.jobsQueued,
+		Executors:         cloneMap(t.executors),
+		JobDuration:       cloneDurations(t.jobDuration),
+		Transitions:       cloneMap(t.transitions),
+		SchedulerRuns:     cloneMap(t.schedulerRuns),
+		SchedulerDelay:    t.schedulerDelay,
+		SchedulerDuration: t.schedulerDuration,
+		LeaseWait:         t.leaseWait,
+		Core:              cloneRequests(t.core),
+		Leases:            cloneMap(t.leases),
 	}
+	t.mu.RUnlock()
+
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	snapshot.Goroutines = runtime.NumGoroutine()
+	snapshot.HeapAllocBytes = memory.HeapAlloc
+	snapshot.HeapInUseBytes = memory.HeapInuse
+	snapshot.SysBytes = memory.Sys
+	return snapshot
 }
 
 func cloneMap(source map[string]uint64) map[string]uint64 {
@@ -156,6 +233,14 @@ func cloneMap(source map[string]uint64) map[string]uint64 {
 
 func cloneRequests(source map[string]RequestMetric) map[string]RequestMetric {
 	copy := make(map[string]RequestMetric, len(source))
+	for key, value := range source {
+		copy[key] = value
+	}
+	return copy
+}
+
+func cloneDurations(source map[string]DurationMetric) map[string]DurationMetric {
+	copy := make(map[string]DurationMetric, len(source))
 	for key, value := range source {
 		copy[key] = value
 	}
