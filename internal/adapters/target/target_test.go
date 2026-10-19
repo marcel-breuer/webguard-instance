@@ -2,6 +2,7 @@ package target
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -114,6 +115,27 @@ func TestValidateHostRejectsPrivateAddressesByDefault(t *testing.T) {
 	}
 }
 
+func TestValidateHostRejectsSpecialPurposeAddresses(t *testing.T) {
+	t.Parallel()
+
+	for _, address := range []string{
+		"100.64.0.1",
+		"192.0.2.1",
+		"198.18.0.1",
+		"203.0.113.1",
+		"64:ff9b::a9fe:a9fe",
+		"2001:db8::1",
+	} {
+		address := address
+		t.Run(address, func(t *testing.T) {
+			t.Parallel()
+			if err := ValidateHost(context.Background(), address, EgressPolicy{}); err == nil {
+				t.Fatalf("expected special-purpose address %s to be rejected", address)
+			}
+		})
+	}
+}
+
 func TestValidateHostAllowsPrivateAddressesWhenConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -128,5 +150,16 @@ func TestHTTPURLRejectsUnsupportedSchemes(t *testing.T) {
 	_, err := HTTPURL(context.Background(), "file:///etc/passwd", EgressPolicy{AllowPrivate: true})
 	if err == nil {
 		t.Fatalf("expected unsupported scheme error")
+	}
+}
+
+func TestHTTPURLRejectsEmbeddedCredentialsAndOversizedTarget(t *testing.T) {
+	t.Parallel()
+
+	if _, err := HTTPURL(context.Background(), "https://user:secret@example.com/", EgressPolicy{}); err == nil {
+		t.Fatal("expected embedded target credentials to be rejected")
+	}
+	if _, err := HTTPURL(context.Background(), "https://example.com/"+strings.Repeat("a", 4097), EgressPolicy{}); err == nil {
+		t.Fatal("expected oversized target to be rejected")
 	}
 }

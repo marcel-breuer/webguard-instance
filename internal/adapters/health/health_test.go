@@ -62,6 +62,12 @@ func TestOperationsHandlerSeparatesLivenessReadinessAndMetrics(t *testing.T) {
 	t.Parallel()
 	telemetry := application.NewTelemetry()
 	telemetry.RecordRun(time.Second, "success")
+	telemetry.QueueJob()
+	telemetry.StartJob()
+	telemetry.FinishJobWithDuration("response", "up", 250*time.Millisecond)
+	telemetry.RecordJobTransition("running", "completed")
+	telemetry.RecordSchedulerRun(75*time.Millisecond, 2*time.Second, "success")
+	telemetry.RecordLeaseWait(40 * time.Millisecond)
 	telemetry.RecordCoreRequest("claim_monitoring_jobs", 50*time.Millisecond, nil)
 	handler := NewHandler(ReadinessFunc(func() bool { return false }), telemetry)
 
@@ -79,6 +85,18 @@ func TestOperationsHandlerSeparatesLivenessReadinessAndMetrics(t *testing.T) {
 	handler.ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if metrics.Code != http.StatusOK || !strings.Contains(metrics.Body.String(), `webguard_instance_runs_total{outcome="success"} 1`) || !strings.Contains(metrics.Body.String(), `operation="claim_monitoring_jobs"`) {
 		t.Fatalf("unexpected metrics: %q", metrics.Body.String())
+	}
+	for _, metric := range []string{
+		"webguard_instance_job_duration_seconds_sum{phase=\"response\"} 0.250000",
+		"webguard_instance_job_transitions_total{from=\"running\",to=\"completed\"} 1",
+		"webguard_instance_scheduler_delay_seconds_sum 0.075000",
+		"webguard_instance_lease_wait_seconds_sum 0.040000",
+		"webguard_instance_process_goroutines",
+		"webguard_instance_process_heap_alloc_bytes",
+	} {
+		if !strings.Contains(metrics.Body.String(), metric) {
+			t.Fatalf("expected metric %q, got %q", metric, metrics.Body.String())
+		}
 	}
 	if strings.Contains(metrics.Body.String(), "target") || strings.Contains(metrics.Body.String(), "monitoring_id") {
 		t.Fatalf("metrics must not expose high-cardinality target labels: %q", metrics.Body.String())

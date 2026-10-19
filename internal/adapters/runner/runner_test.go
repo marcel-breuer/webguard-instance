@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ type fakeCoreClient struct {
 	claimRequests   []monitor.ClaimMonitoringJobsRequest
 	completedJobs   []completedJob
 	releasedJobs    []releasedJob
+	extend          func(context.Context, string, monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error)
 }
 
 type completedJob struct {
@@ -116,7 +118,10 @@ func (f *fakeCoreClient) ReleaseMonitoringJob(_ context.Context, jobID string, r
 	return nil
 }
 
-func (f *fakeCoreClient) ExtendMonitoringJob(_ context.Context, _ string, _ monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error) {
+func (f *fakeCoreClient) ExtendMonitoringJob(ctx context.Context, jobID string, request monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error) {
+	if f.extend != nil {
+		return f.extend(ctx, jobID, request)
+	}
 	return monitor.ExtendMonitoringJobResponse{}, nil
 }
 
@@ -197,6 +202,7 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 		{
 			ID:             "job-response",
 			Phase:          string(PhaseResponse),
+			LeaseExpiresAt: time.Now().Add(time.Minute),
 			Attempt:        2,
 			IdempotencyKey: "6f3a8bb2-8a66-4c84-91db-5166c9c291c5",
 			Monitoring: monitor.Monitoring{
@@ -216,7 +222,7 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 			ID:             "job-expired",
 			Phase:          string(PhaseResponse),
 			Attempt:        4,
-			IdempotencyKey: "expired-key",
+			IdempotencyKey: "39d4e4b3-2b2e-446c-9f79-58f6c7e35099",
 			LeaseExpiresAt: time.Now().Add(-time.Minute),
 			Monitoring: monitor.Monitoring{
 				ID: "http-expired", Type: monitor.TypeHTTP, Target: "https://example.com",
@@ -247,7 +253,7 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 	if claims[0].Location != "de-1" || claims[0].InstanceID != "worker-de-1-a" {
 		t.Fatalf("unexpected claim identity: %#v", claims[0])
 	}
-	if claims[0].Capacity != 2 || claims[0].MaxBatchSize != 4 {
+	if claims[0].Capacity != 2 || claims[0].MaxBatchSize != 2 {
 		t.Fatalf("unexpected claim capacity: %#v", claims[0])
 	}
 	if !slices.Equal(claims[0].Capabilities, []string{"response", "ssl", "domain_expiration"}) {
@@ -283,6 +289,280 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 	if len(client.snapshotCalls()) != 0 {
 		t.Fatalf("expected no legacy monitoring fetches when job leases are enabled")
 	}
+}
+
+func TestRunMonitoringClaimCapacityRespectsGlobalConcurrency(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{}
+	runner := newTestService(client, config.Config{
+		WebGuardLocation: "de-1", WebGuardInstanceID: "worker-a", JobLeasesEnabled: true,
+		QueueDefaultWorkers: 8, RunMaxConcurrency: 2, JobLeaseMaxBatch: 8,
+	}, log.New(io.Discard, "", 0))
+	if err := runner.RunMonitoring(context.Background()); err != nil {
+		t.Fatalf("RunMonitoring failed: %v", err)
+	}
+	claims := client.snapshotClaimRequests()
+	if len(claims) != 1 || claims[0].Capacity != 2 || claims[0].MaxBatchSize != 2 {
+		t.Fatalf("expected claim pressure to respect the global concurrency limit, got %#v", claims)
+	}
+}
+
+func TestRunMonitoringDeduplicatesClaimedJobsAndUsesCoreIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	job := monitor.ClaimedJob{
+		ID:             "job-stable-idempotency",
+		Phase:          string(PhaseResponse),
+		LeaseExpiresAt: time.Now().Add(time.Minute),
+		Attempt:        1,
+		IdempotencyKey: "6f3a8bb2-8a66-4c84-91db-5166c9c291c5",
+		Monitoring: monitor.Monitoring{
+			ID: "monitor-stable-idempotency", Type: monitor.TypeHTTP, Target: "https://example.com",
+		},
+	}
+	client := &fakeCoreClient{claimedJobs: []monitor.ClaimedJob{job, job}}
+	runner := newTestService(client, config.Config{
+		WebGuardLocation: "de-1", WebGuardInstanceID: "worker-a", JobLeasesEnabled: true,
+		JobLeaseMaxBatch: 2, QueueDefaultWorkers: 2, JobLeasesDualWrite: true,
+	}, log.New(io.Discard, "", 0))
+	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
+		return http.StatusOK, "", nil
+	})
+
+	if err := runner.RunMonitoring(context.Background()); err != nil {
+		t.Fatalf("RunMonitoring failed: %v", err)
+	}
+	completed := client.snapshotCompletedJobs()
+	posted := client.snapshotPostedResponses()
+	if len(completed) != 1 || len(posted) != 1 {
+		t.Fatalf("duplicate lease delivery should execute and report once, got completed=%d posted=%d", len(completed), len(posted))
+	}
+	if completed[0].idempotencyKey != job.IdempotencyKey || posted[0].IdempotencyKey != job.IdempotencyKey {
+		t.Fatalf("expected callback and completion to reuse the Core-issued key %q, got completion=%q callback=%q", job.IdempotencyKey, completed[0].idempotencyKey, posted[0].IdempotencyKey)
+	}
+	if runner.telemetry.Snapshot().Leases["duplicate"] != 1 {
+		t.Fatalf("expected duplicate delivery to be observable, got %#v", runner.telemetry.Snapshot().Leases)
+	}
+}
+
+func TestRunMonitoringRenewsLeaseAndReleasesWhenCanceled(t *testing.T) {
+	job := monitor.ClaimedJob{
+		ID: "job-renewal", Phase: string(PhaseResponse), LeaseExpiresAt: time.Now().Add(time.Second), Attempt: 1,
+		IdempotencyKey: "39d4e4b3-2b2e-446c-9f79-58f6c7e35099",
+		Monitoring:     monitor.Monitoring{ID: "monitor-renewal", Type: monitor.TypeHTTP, Target: "https://example.com"},
+	}
+	extended := make(chan struct{}, 1)
+	client := &fakeCoreClient{claimedJobs: []monitor.ClaimedJob{job}}
+	client.extend = func(ctx context.Context, jobID string, request monitor.ExtendMonitoringJobRequest) (monitor.ExtendMonitoringJobResponse, error) {
+		if jobID != job.ID || request.Attempt != job.Attempt {
+			t.Errorf("unexpected lease extension request: job=%q attempt=%d", jobID, request.Attempt)
+		}
+		select {
+		case extended <- struct{}{}:
+		default:
+		}
+		return monitor.ExtendMonitoringJobResponse{LeaseExpiresAt: time.Now().Add(time.Minute)}, nil
+	}
+	runner := newTestService(client, config.Config{
+		WebGuardLocation: "de-1", WebGuardInstanceID: "worker-a", JobLeasesEnabled: true,
+		JobLeaseMaxBatch: 1, QueueDefaultWorkers: 1,
+	}, log.New(io.Discard, "", 0))
+	checkStarted := make(chan struct{}, 1)
+	runner.httpChecker = HTTPCheckFunc(func(ctx context.Context, _ monitor.Monitoring) (int, string, error) {
+		checkStarted <- struct{}{}
+		<-ctx.Done()
+		return 0, "", ctx.Err()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.RunMonitoring(ctx) }()
+	select {
+	case <-checkStarted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("monitoring check did not start")
+	}
+	select {
+	case <-extended:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("lease was not renewed before its deadline")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunMonitoring failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitoring did not stop after cancellation")
+	}
+	if len(client.snapshotCompletedJobs()) != 0 {
+		t.Fatal("canceled check must not report a completion")
+	}
+	released := client.snapshotReleasedJobs()
+	if len(released) != 1 || released[0].jobID != job.ID {
+		t.Fatalf("expected canceled lease to be released for retry, got %#v", released)
+	}
+	if runner.telemetry.Snapshot().Leases["extended"] == 0 {
+		t.Fatal("expected lease renewal to be observable")
+	}
+}
+
+func TestRunMonitoringReleasesInvalidClaimedPayloads(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{claimedJobs: []monitor.ClaimedJob{{
+		ID: "job-invalid-target", Phase: string(PhaseResponse), LeaseExpiresAt: time.Now().Add(time.Minute), Attempt: 1,
+		IdempotencyKey: "39d4e4b3-2b2e-446c-9f79-58f6c7e35099",
+		Monitoring:     monitor.Monitoring{ID: "monitor-invalid-target", Type: monitor.TypeHTTP},
+	}, {
+		ID: "job-invalid-idempotency", Phase: string(PhaseResponse), LeaseExpiresAt: time.Now().Add(time.Minute), Attempt: 1,
+		IdempotencyKey: "not-a-uuid",
+		Monitoring:     monitor.Monitoring{ID: "monitor-invalid-idempotency", Type: monitor.TypeHTTP, Target: "https://example.com"},
+	}}}
+	runner := newTestService(client, config.Config{
+		WebGuardLocation: "de-1", WebGuardInstanceID: "worker-a", JobLeasesEnabled: true,
+		JobLeaseMaxBatch: 2, QueueDefaultWorkers: 2,
+	}, log.New(io.Discard, "", 0))
+
+	if err := runner.RunMonitoring(context.Background()); err != nil {
+		t.Fatalf("RunMonitoring failed: %v", err)
+	}
+	released := client.snapshotReleasedJobs()
+	reasons := make(map[string]string, len(released))
+	for _, job := range released {
+		reasons[job.jobID] = job.request.Reason
+	}
+	if len(reasons) != 2 || reasons["job-invalid-target"] != "monitoring target is empty" || reasons["job-invalid-idempotency"] != "job idempotency key is invalid" {
+		t.Fatalf("expected invalid payload to be released, got %#v", released)
+	}
+	if len(client.snapshotCompletedJobs()) != 0 {
+		t.Fatal("invalid payload must not be executed or completed")
+	}
+}
+
+func TestPerformHTTPRequestRejectsOversizedConfiguredRequests(t *testing.T) {
+	t.Parallel()
+
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requestCount++
+	}))
+	defer server.Close()
+
+	runner := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
+	tests := []struct {
+		name       string
+		body       any
+		headers    any
+		wantReason string
+	}{
+		{
+			name:       "body limit",
+			body:       `"` + strings.Repeat("x", fixedHTTPMaxRequestBodyBytes+1) + `"`,
+			wantReason: "request body exceeds",
+		},
+		{
+			name:       "header count limit",
+			headers:    oversizedHeaderSet(),
+			wantReason: "request headers exceed",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, _, err := runner.performHTTPRequest(context.Background(), monitor.Monitoring{
+				ID: "request-limit", Type: monitor.TypeHTTP, Target: server.URL,
+				HTTPMethod: monitor.HTTPMethodPost, HTTPBody: testCase.body, HTTPHeaders: testCase.headers,
+			})
+			if err == nil || !strings.Contains(err.Error(), testCase.wantReason) {
+				t.Fatalf("expected %q error, got %v", testCase.wantReason, err)
+			}
+		})
+	}
+	if requestCount != 0 {
+		t.Fatalf("oversized configured requests must be rejected before dialing, got %d requests", requestCount)
+	}
+}
+
+func TestRunMonitoringBoundsConcurrentChecksAcrossConfiguredWorkers(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeCoreClient{responseMonitorings: []monitor.Monitoring{
+		{ID: "http-1", Type: monitor.TypeHTTP, Target: "https://example.com"},
+		{ID: "http-2", Type: monitor.TypeHTTP, Target: "https://example.com"},
+		{ID: "http-3", Type: monitor.TypeHTTP, Target: "https://example.com"},
+		{ID: "http-4", Type: monitor.TypeHTTP, Target: "https://example.com"},
+	}}
+	telemetry := application.NewTelemetry()
+	runner := NewWithTelemetry(client, config.Config{
+		WebGuardLocation: "de-1", QueueDefaultWorkers: 4, RunMaxConcurrency: 2,
+	}, log.New(io.Discard, "", 0), telemetry)
+	var active atomic.Int32
+	var maximum atomic.Int32
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	runner.httpChecker = HTTPCheckFunc(func(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
+		current := active.Add(1)
+		for previous := maximum.Load(); current > previous; previous = maximum.Load() {
+			if maximum.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		started <- struct{}{}
+		select {
+		case <-ctx.Done():
+			active.Add(-1)
+			return 0, "", ctx.Err()
+		case <-release:
+			active.Add(-1)
+			return http.StatusOK, monitoring.ID, nil
+		}
+	})
+	controller := application.NewExecutionControllerWithTelemetry(runner, log.New(io.Discard, "", 0), 2, telemetry)
+	done := make(chan error, 1)
+	go func() { done <- controller.RunMonitoring(context.Background()) }()
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			close(release)
+			t.Fatal("expected two checks to start under the configured concurrency limit")
+		}
+	}
+	if active.Load() != 2 {
+		close(release)
+		t.Fatalf("expected two active checks, got %d", active.Load())
+	}
+	select {
+	case <-started:
+		close(release)
+		t.Fatal("a third check started while the shared execution budget was full")
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("monitoring run failed: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("monitoring run did not finish after releasing checks")
+	}
+	if maximum.Load() > 2 {
+		t.Fatalf("expected maximum concurrency 2, got %d", maximum.Load())
+	}
+}
+
+func oversizedHeaderSet() map[string]string {
+	headers := make(map[string]string, fixedHTTPMaxRequestHeaders+1)
+	for i := 0; i <= fixedHTTPMaxRequestHeaders; i++ {
+		headers[strings.Repeat("X", i+1)] = "value"
+	}
+	return headers
 }
 
 func TestRunMonitoringMaintenancePostsUnknown(t *testing.T) {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"testing"
@@ -12,11 +13,33 @@ import (
 
 type fakeMonitoringService struct {
 	runMonitoringCalls int
+	runErr             error
 }
 
 func (f *fakeMonitoringService) RunMonitoring(context.Context) error {
 	f.runMonitoringCalls++
-	return nil
+	return f.runErr
+}
+
+func TestRunMonitoringCommandReturnsFailureWhenRunFails(t *testing.T) {
+	t.Parallel()
+
+	service := &fakeMonitoringService{runErr: errors.New("Core unavailable")}
+	var logs bytes.Buffer
+	exitCode := run(
+		[]string{"monitoring"},
+		log.New(&logs, "", 0),
+		config.Config{},
+		service,
+		func(_ *log.Logger, _ monitoringService, _ config.Config) int {
+			t.Fatalf("serve should not be called for monitoring command")
+			return 1
+		},
+		io.Discard,
+	)
+	if exitCode != 1 || service.runMonitoringCalls != 1 || !bytes.Contains(logs.Bytes(), []byte("Monitoring command failed: Core unavailable")) {
+		t.Fatalf("expected failed monitoring command to be visible, got exit=%d calls=%d logs=%q", exitCode, service.runMonitoringCalls, logs.String())
+	}
 }
 
 func TestRunDefaultsToServe(t *testing.T) {

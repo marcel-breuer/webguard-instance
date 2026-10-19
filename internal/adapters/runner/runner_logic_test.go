@@ -1280,7 +1280,7 @@ func TestRunDomainExpirationUsesCoreAPIEndpoints(t *testing.T) {
 	}
 }
 
-func TestLogFetchErrorIncludesStatusBody(t *testing.T) {
+func TestLogFetchErrorDoesNotExposeStatusBody(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
@@ -1288,13 +1288,13 @@ func TestLogFetchErrorIncludesStatusBody(t *testing.T) {
 
 	r.logFetchError(&coreapi.HTTPStatusError{
 		StatusCode: http.StatusForbidden,
-		Body:       "forbidden",
+		Body:       "api-key=do-not-log",
 	})
 
-	if !bytes.Contains(logs.Bytes(), []byte("Failed to fetch monitorings from the Core API.")) {
+	if !bytes.Contains(logs.Bytes(), []byte("Failed to fetch monitorings from the Core API (status=403).")) {
 		t.Fatalf("expected generic fetch error log, got %q", logs.String())
 	}
-	if !bytes.Contains(logs.Bytes(), []byte("forbidden")) {
-		t.Fatalf("expected response body to be logged, got %q", logs.String())
+	if bytes.Contains(logs.Bytes(), []byte("do-not-log")) {
+		t.Fatalf("Core response body must not be logged, got %q", logs.String())
 	}
 }

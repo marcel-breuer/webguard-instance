@@ -34,6 +34,9 @@ const fixedHTTPRetryDelay = 250 * time.Millisecond
 const fixedHTTPMaxRedirects = 5
 const fixedHTTPTimeoutSeconds = 30
 const fixedHTTPMaxResponseBytes = 2 << 20
+const fixedHTTPMaxRequestBodyBytes = 1 << 20
+const fixedHTTPMaxRequestHeaders = 64
+const fixedHTTPMaxRequestHeaderBytes = 32 << 10
 const fixedPingTimeoutSeconds = 5
 
 var pingLatencyPattern = regexp.MustCompile(`time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms`)
@@ -113,24 +116,19 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 	jobs := make(chan monitor.Monitoring)
 	var workers sync.WaitGroup
 
-	workerCount := max(1, r.cfg.QueueDefaultWorkers)
+	workerCount := r.workerLimit()
 	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
 				if !r.responseCadence.tryStart(monitoring, r.cfg.WebGuardLocation, r.now()) {
+					r.telemetry.DropQueuedJob(string(PhaseResponse), "cadence")
 					r.logger.Printf("Skipping response monitoring until its next cadence window (monitoring_id=%s interval_seconds=%d)", monitoring.ID, monitoring.CheckIntervalSeconds)
 					continue
 				}
 
-				release, err := application.AcquireExecutionSlot(ctx)
-				if err != nil {
-					r.logger.Printf("Response monitoring canceled before execution (monitoring_id=%s): %v", monitoring.ID, err)
-					continue
-				}
-				execution, _ := r.executors.Execute(ctx, PhaseResponse, monitoring)
-				release()
+				execution, _ := r.executeMonitoring(ctx, PhaseResponse, monitoring)
 				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseResponse, executionOutcome(execution))
 				r.logger.Printf(
 					"Response monitoring result computed (monitoring_id=%s type=%s %s)",
@@ -166,6 +164,7 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 		}
 
 		dispatched++
+		r.telemetry.QueueJob()
 		jobs <- monitoring
 	}
 	close(jobs)
@@ -204,19 +203,13 @@ func (r *MonitoringService) runSSL(ctx context.Context) error {
 	jobs := make(chan monitor.Monitoring)
 	var workers sync.WaitGroup
 
-	workerCount := max(1, r.cfg.QueueDefaultWorkers)
+	workerCount := r.workerLimit()
 	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				release, err := application.AcquireExecutionSlot(ctx)
-				if err != nil {
-					r.logger.Printf("SSL monitoring canceled before execution (monitoring_id=%s): %v", monitoring.ID, err)
-					continue
-				}
-				execution, _ := r.executors.Execute(ctx, PhaseSSL, monitoring)
-				release()
+				execution, _ := r.executeMonitoring(ctx, PhaseSSL, monitoring)
 				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseSSL, executionOutcome(execution))
 				r.publishExecution(ctx, execution)
 			}
@@ -239,6 +232,7 @@ func (r *MonitoringService) runSSL(ctx context.Context) error {
 			continue
 		}
 		dispatched++
+		r.telemetry.QueueJob()
 		jobs <- monitoring
 	}
 	close(jobs)
@@ -276,19 +270,13 @@ func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 	jobs := make(chan monitor.Monitoring)
 	var workers sync.WaitGroup
 
-	workerCount := max(1, r.cfg.QueueDefaultWorkers)
+	workerCount := r.workerLimit()
 	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				release, err := application.AcquireExecutionSlot(ctx)
-				if err != nil {
-					r.logger.Printf("Domain expiration monitoring canceled before execution (monitoring_id=%s): %v", monitoring.ID, err)
-					continue
-				}
-				execution, _ := r.executors.Execute(ctx, PhaseDomainExpiration, monitoring)
-				release()
+				execution, _ := r.executeMonitoring(ctx, PhaseDomainExpiration, monitoring)
 				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseDomainExpiration, executionOutcome(execution))
 				r.logger.Printf(
 					"Domain expiration monitoring result computed (monitoring_id=%s %s)",
@@ -318,6 +306,7 @@ func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
 		}
 
 		dispatched++
+		r.telemetry.QueueJob()
 		jobs <- monitoring
 	}
 	close(jobs)
@@ -360,13 +349,40 @@ func (p monitoringPhase) Run(ctx context.Context) error {
 	return p.run(ctx)
 }
 
-func (r *MonitoringService) logFetchError(err error) {
-	r.logger.Println("Failed to fetch monitorings from the Core API.")
-
-	var statusError *coreapi.HTTPStatusError
-	if errors.As(err, &statusError) && strings.TrimSpace(statusError.Body) != "" {
-		r.logger.Println(statusError.Body)
+func (r *MonitoringService) executeMonitoring(ctx context.Context, phase ExecutionPhase, monitoring monitor.Monitoring) (Execution, bool) {
+	r.telemetry.StartJob()
+	startedAt := time.Now()
+	release, err := application.AcquireExecutionSlot(ctx)
+	if err != nil {
+		r.logger.Printf("Monitoring canceled before execution (monitoring_id=%s phase=%s)", monitoring.ID, phase)
+		r.telemetry.FinishJobWithDuration(string(phase), "canceled", time.Since(startedAt))
+		return Execution{}, false
 	}
+	execution, supported := r.executors.Execute(ctx, phase, monitoring)
+	release()
+	outcome := executionOutcome(execution)
+	if !supported {
+		outcome = "unsupported"
+	}
+	r.telemetry.FinishJobWithDuration(string(phase), outcome, time.Since(startedAt))
+	return execution, supported
+}
+
+func (r *MonitoringService) workerLimit() int {
+	workers := max(1, r.cfg.QueueDefaultWorkers)
+	if r.cfg.RunMaxConcurrency > 0 {
+		workers = min(workers, r.cfg.RunMaxConcurrency)
+	}
+	return workers
+}
+
+func (r *MonitoringService) logFetchError(err error) {
+	var statusError *coreapi.HTTPStatusError
+	if errors.As(err, &statusError) {
+		r.logger.Printf("Failed to fetch monitorings from the Core API (status=%d).", statusError.StatusCode)
+		return
+	}
+	r.logger.Println("Failed to fetch monitorings from the Core API.")
 }
 
 func (r *MonitoringService) observeHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int, monitor.RawObservation) {
@@ -547,6 +563,12 @@ func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring m
 
 	headers := normalizeHeaders(monitoring.HTTPHeaders)
 	body := normalizeBody(monitoring.HTTPBody)
+	if len(body) > fixedHTTPMaxRequestBodyBytes {
+		return 0, "", fmt.Errorf("monitoring request body exceeds %d bytes", fixedHTTPMaxRequestBodyBytes)
+	}
+	if len(headers) > fixedHTTPMaxRequestHeaders || headerBytes(headers) > fixedHTTPMaxRequestHeaderBytes {
+		return 0, "", fmt.Errorf("monitoring request headers exceed configured limits")
+	}
 	if method == "get" || method == "delete" {
 		body = nil
 	}
@@ -586,7 +608,13 @@ func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring m
 			if err != nil {
 				lastErr = err
 				if attempt < attempts-1 {
-					time.Sleep(delay)
+					timer := time.NewTimer(delay)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return 0, "", ctx.Err()
+					case <-timer.C:
+					}
 					continue
 				}
 				break
@@ -606,6 +634,14 @@ func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring m
 		return firstResponse.statusCode, firstResponse.body, nil
 	}
 	return 0, "", lastErr
+}
+
+func headerBytes(headers map[string]string) int {
+	size := 0
+	for name, value := range headers {
+		size += len(name) + len(value)
+	}
+	return size
 }
 
 type httpCheckResult struct {

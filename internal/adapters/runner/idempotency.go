@@ -26,10 +26,14 @@ func newIdempotencyKey() (string, error) {
 }
 
 func isUUIDv4(value string) bool {
+	return isUUIDVersion(value, '4')
+}
+
+func isUUIDVersion(value string, version byte) bool {
 	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
 		return false
 	}
-	if value[14] != '4' || !strings.ContainsRune("89abAB", rune(value[19])) {
+	if value[14] != version || !strings.ContainsRune("89abAB", rune(value[19])) {
 		return false
 	}
 

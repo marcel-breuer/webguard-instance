@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 
 const (
 	maxResponseBodyBytes = 4 << 20
+	maxClaimBatchSize    = 256
+	maxAPIKeyFileBytes   = 8 << 10
 
 	DefaultInstanceAPIBasePath = "/api/instances"
 )
@@ -25,6 +28,7 @@ const (
 type Client struct {
 	baseURL         string
 	apiKey          string
+	apiKeyFile      string
 	instanceCode    string
 	instanceAPIPath string
 	httpClient      *http.Client
@@ -59,9 +63,24 @@ func NewClient(baseURL, apiKey, instanceCode string) *Client {
 		instanceCode:    strings.TrimSpace(instanceCode),
 		instanceAPIPath: DefaultInstanceAPIBasePath,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout:       30 * time.Second,
+			CheckRedirect: rejectCrossOriginRedirect,
 		},
 	}
+}
+
+func rejectCrossOriginRedirect(request *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if len(via) >= 5 {
+		return fmt.Errorf("stopped after 5 Core API redirects")
+	}
+	origin := via[0].URL
+	if request.URL.Scheme != origin.Scheme || !strings.EqualFold(request.URL.Host, origin.Host) {
+		return fmt.Errorf("Core API redirect changed origin")
+	}
+	return nil
 }
 
 func NewClientWithInstanceAPIPath(baseURL, apiKey, instanceCode, instanceAPIPath string) *Client {
@@ -90,6 +109,12 @@ func (c *Client) SetHTTPClient(httpClient *http.Client) {
 
 func (c *Client) SetTelemetry(telemetry *application.Telemetry) {
 	c.telemetry = telemetry
+}
+
+// SetAPIKeyFile configures a secret file that is reread for each request so
+// mounted credentials can be rotated without restarting the worker.
+func (c *Client) SetAPIKeyFile(path string) {
+	c.apiKeyFile = strings.TrimSpace(path)
 }
 
 func (c *Client) GetMonitorings(ctx context.Context, location string, types []monitor.Type) ([]monitor.Monitoring, error) {
@@ -178,6 +203,9 @@ func (c *Client) ClaimMonitoringJobs(ctx context.Context, payload monitor.ClaimM
 	if payload.MaxBatchSize < 1 {
 		return nil, fmt.Errorf("claim max batch size must be positive")
 	}
+	if payload.MaxBatchSize > maxClaimBatchSize {
+		return nil, fmt.Errorf("claim max batch size exceeds %d", maxClaimBatchSize)
+	}
 
 	request, err := c.newRequest(ctx, http.MethodPost, c.instanceAPIEndpoint("/monitoring-jobs/claim"), nil, payload)
 	if err != nil {
@@ -187,6 +215,9 @@ func (c *Client) ClaimMonitoringJobs(ctx context.Context, payload monitor.ClaimM
 	var response monitor.ClaimMonitoringJobsResponse
 	if err := c.doJSON(request, &response, "claim_monitoring_jobs"); err != nil {
 		return nil, err
+	}
+	if len(response.Jobs) > payload.MaxBatchSize {
+		return nil, fmt.Errorf("Core API returned more jobs than the requested batch limit")
 	}
 	return response.Jobs, nil
 }
@@ -244,6 +275,18 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	if err != nil {
 		return nil, err
 	}
+	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+		return nil, fmt.Errorf("WEBGUARD_CORE_API_URL must use HTTP or HTTPS")
+	}
+	if endpoint.Host == "" {
+		return nil, fmt.Errorf("WEBGUARD_CORE_API_URL must include a host")
+	}
+	if endpoint.User != nil {
+		return nil, fmt.Errorf("WEBGUARD_CORE_API_URL must not contain credentials")
+	}
+	if endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return nil, fmt.Errorf("WEBGUARD_CORE_API_URL must not contain a query or fragment")
+	}
 	if query != nil {
 		endpoint.RawQuery = query.Encode()
 	}
@@ -265,14 +308,41 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	if c.apiKey != "" {
-		request.Header.Set("X-API-KEY", c.apiKey)
+	apiKey, err := c.configuredAPIKey()
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != "" {
+		request.Header.Set("X-API-KEY", apiKey)
 	}
 	if c.instanceCode != "" {
 		request.Header.Set("X-INSTANCE-CODE", c.instanceCode)
 	}
 
 	return request, nil
+}
+
+func (c *Client) configuredAPIKey() (string, error) {
+	if c.apiKeyFile == "" {
+		return c.apiKey, nil
+	}
+	file, err := os.Open(c.apiKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("read WEBGUARD_CORE_API_KEY_FILE: %w", err)
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, maxAPIKeyFileBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read WEBGUARD_CORE_API_KEY_FILE: %w", err)
+	}
+	if len(content) > maxAPIKeyFileBytes {
+		return "", fmt.Errorf("WEBGUARD_CORE_API_KEY_FILE exceeds %d bytes", maxAPIKeyFileBytes)
+	}
+	apiKey := strings.TrimSpace(string(content))
+	if apiKey == "" {
+		return "", fmt.Errorf("WEBGUARD_CORE_API_KEY_FILE is empty")
+	}
+	return apiKey, nil
 }
 
 func (c *Client) instanceAPIEndpoint(suffix string) string {

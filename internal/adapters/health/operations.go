@@ -66,10 +66,30 @@ func RenderMetrics(snapshot application.TelemetrySnapshot) string {
 	fmt.Fprintf(&metrics, "webguard_instance_jobs_active %d\nwebguard_instance_jobs_queued %d\n", snapshot.JobsActive, snapshot.JobsQueued)
 	metrics.WriteString("# HELP webguard_instance_executor_outcomes_total Executor outcomes by bounded phase and outcome.\n# TYPE webguard_instance_executor_outcomes_total counter\n")
 	writeSplitCounter(&metrics, "webguard_instance_executor_outcomes_total", snapshot.Executors, "phase", "outcome")
+	metrics.WriteString("# HELP webguard_instance_job_duration_seconds Duration of individual monitoring checks by phase.\n# TYPE webguard_instance_job_duration_seconds summary\n")
+	writeDurationMetrics(&metrics, "webguard_instance_job_duration_seconds", snapshot.JobDuration, "phase")
+	metrics.WriteString("# HELP webguard_instance_job_transitions_total Monitoring job state transitions.\n# TYPE webguard_instance_job_transitions_total counter\n")
+	writeTransitionCounter(&metrics, "webguard_instance_job_transitions_total", snapshot.Transitions)
+	metrics.WriteString("# HELP webguard_instance_scheduler_runs_total Scheduled run outcomes.\n# TYPE webguard_instance_scheduler_runs_total counter\n")
+	writeLabeledCounter(&metrics, "webguard_instance_scheduler_runs_total", "outcome", snapshot.SchedulerRuns)
+	metrics.WriteString("# HELP webguard_instance_scheduler_delay_seconds Delay between the scheduled boundary and run start.\n# TYPE webguard_instance_scheduler_delay_seconds summary\n")
+	fmt.Fprintf(&metrics, "webguard_instance_scheduler_delay_seconds_count %d\nwebguard_instance_scheduler_delay_seconds_sum %.6f\n", snapshot.SchedulerDelay.Count, snapshot.SchedulerDelay.Sum.Seconds())
+	metrics.WriteString("# HELP webguard_instance_scheduler_run_duration_seconds Duration of scheduled work.\n# TYPE webguard_instance_scheduler_run_duration_seconds summary\n")
+	fmt.Fprintf(&metrics, "webguard_instance_scheduler_run_duration_seconds_count %d\nwebguard_instance_scheduler_run_duration_seconds_sum %.6f\n", snapshot.SchedulerDuration.Count, snapshot.SchedulerDuration.Sum.Seconds())
 	metrics.WriteString("# HELP webguard_instance_core_requests_total Core API requests by bounded operation.\n# TYPE webguard_instance_core_requests_total counter\n")
 	writeRequestMetrics(&metrics, snapshot.Core)
 	metrics.WriteString("# HELP webguard_instance_lease_events_total Lease lifecycle events.\n# TYPE webguard_instance_lease_events_total counter\n")
 	writeLabeledCounter(&metrics, "webguard_instance_lease_events_total", "event", snapshot.Leases)
+	metrics.WriteString("# HELP webguard_instance_lease_wait_seconds Time from job claim to worker start.\n# TYPE webguard_instance_lease_wait_seconds summary\n")
+	fmt.Fprintf(&metrics, "webguard_instance_lease_wait_seconds_count %d\nwebguard_instance_lease_wait_seconds_sum %.6f\n", snapshot.LeaseWait.Count, snapshot.LeaseWait.Sum.Seconds())
+	metrics.WriteString("# HELP webguard_instance_process_goroutines Current number of process goroutines.\n# TYPE webguard_instance_process_goroutines gauge\n")
+	fmt.Fprintf(&metrics, "webguard_instance_process_goroutines %d\n", snapshot.Goroutines)
+	metrics.WriteString("# HELP webguard_instance_process_heap_alloc_bytes Current allocated heap bytes.\n# TYPE webguard_instance_process_heap_alloc_bytes gauge\n")
+	fmt.Fprintf(&metrics, "webguard_instance_process_heap_alloc_bytes %d\n", snapshot.HeapAllocBytes)
+	metrics.WriteString("# HELP webguard_instance_process_heap_inuse_bytes Current in-use heap bytes.\n# TYPE webguard_instance_process_heap_inuse_bytes gauge\n")
+	fmt.Fprintf(&metrics, "webguard_instance_process_heap_inuse_bytes %d\n", snapshot.HeapInUseBytes)
+	metrics.WriteString("# HELP webguard_instance_process_sys_bytes Current Go runtime memory obtained from the operating system.\n# TYPE webguard_instance_process_sys_bytes gauge\n")
+	fmt.Fprintf(&metrics, "webguard_instance_process_sys_bytes %d\n", snapshot.SysBytes)
 	return metrics.String()
 }
 
@@ -89,11 +109,30 @@ func writeSplitCounter(builder *strings.Builder, name string, values map[string]
 }
 
 func writeRequestMetrics(builder *strings.Builder, values map[string]application.RequestMetric) {
+	builder.WriteString("# HELP webguard_instance_core_request_duration_seconds Time spent making Core API requests by bounded operation.\n# TYPE webguard_instance_core_request_duration_seconds summary\n")
 	for _, key := range sortedRequestKeys(values) {
 		metric := values[key]
 		fmt.Fprintf(builder, "webguard_instance_core_requests_total{operation=%q} %d\n", key, metric.Count)
 		fmt.Fprintf(builder, "webguard_instance_core_request_errors_total{operation=%q} %d\n", key, metric.Errors)
+		fmt.Fprintf(builder, "webguard_instance_core_request_duration_seconds_count{operation=%q} %d\n", key, metric.Count)
 		fmt.Fprintf(builder, "webguard_instance_core_request_duration_seconds_sum{operation=%q} %.6f\n", key, metric.Duration.Seconds())
+	}
+}
+
+func writeDurationMetrics(builder *strings.Builder, name string, values map[string]application.DurationMetric, label string) {
+	for _, key := range sortedDurationKeys(values) {
+		metric := values[key]
+		fmt.Fprintf(builder, "%s_count{%s=%q} %d\n", name, label, key, metric.Count)
+		fmt.Fprintf(builder, "%s_sum{%s=%q} %.6f\n", name, label, key, metric.Sum.Seconds())
+	}
+}
+
+func writeTransitionCounter(builder *strings.Builder, name string, values map[string]uint64) {
+	for _, key := range sortedKeys(values) {
+		parts := strings.SplitN(key, "->", 2)
+		if len(parts) == 2 {
+			fmt.Fprintf(builder, "%s{from=%q,to=%q} %d\n", name, parts[0], parts[1], values[key])
+		}
 	}
 }
 
@@ -107,6 +146,15 @@ func sortedKeys(values map[string]uint64) []string {
 }
 
 func sortedRequestKeys(values map[string]application.RequestMetric) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedDurationKeys(values map[string]application.DurationMetric) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
