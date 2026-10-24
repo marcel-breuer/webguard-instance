@@ -75,6 +75,28 @@ func TestMonitoringUnmarshalCheckIntervalSeconds(t *testing.T) {
 	}
 }
 
+func TestMonitoringUnmarshalLocationLastResponseAt(t *testing.T) {
+	t.Parallel()
+
+	var monitoring Monitoring
+	err := json.Unmarshal([]byte(`{
+		"id":"monitoring-1",
+		"type":"http",
+		"target":"https://example.com",
+		"check_interval_seconds":60,
+		"last_response_at":"2026-08-20T12:00:00.123456Z"
+	}`), &monitoring)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if monitoring.LastResponseAt == nil {
+		t.Fatal("expected last_response_at to be parsed")
+	}
+	if got, want := monitoring.LastResponseAt.Format(time.RFC3339Nano), "2026-08-20T12:00:00.123456Z"; got != want {
+		t.Fatalf("expected last_response_at %q, got %q", want, got)
+	}
+}
+
 func TestMonitoringUnmarshalRejectsNegativeCheckIntervalSeconds(t *testing.T) {
 	t.Parallel()
 

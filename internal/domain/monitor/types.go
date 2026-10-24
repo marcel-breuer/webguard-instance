@@ -49,7 +49,8 @@ type Monitoring struct {
 
 	Timeout int `json:"timeout"`
 
-	CheckIntervalSeconds int `json:"check_interval_seconds"`
+	CheckIntervalSeconds int        `json:"check_interval_seconds"`
+	LastResponseAt       *time.Time `json:"last_response_at"`
 
 	HTTPMethod  HTTPMethod `json:"http_method"`
 	HTTPBody    any        `json:"http_body"`
@@ -85,6 +86,7 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 		Timeout any `json:"timeout"`
 
 		CheckIntervalSeconds any `json:"check_interval_seconds"`
+		LastResponseAt       any `json:"last_response_at"`
 
 		HTTPMethod  HTTPMethod `json:"http_method"`
 		HTTPBody    any        `json:"http_body"`
@@ -127,6 +129,10 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 	if checkIntervalSeconds < 0 {
 		return fmt.Errorf("check_interval_seconds must not be negative")
 	}
+	lastResponseAt, err := parseTimeFlexible(raw.LastResponseAt, "last_response_at")
+	if err != nil {
+		return err
+	}
 	port, err := parseIntFlexible(raw.Port, "port")
 	if err != nil {
 		return err
@@ -160,6 +166,7 @@ func (m *Monitoring) UnmarshalJSON(data []byte) error {
 		Timeout: timeout,
 
 		CheckIntervalSeconds: checkIntervalSeconds,
+		LastResponseAt:       lastResponseAt,
 
 		HTTPMethod:  raw.HTTPMethod,
 		HTTPBody:    raw.HTTPBody,

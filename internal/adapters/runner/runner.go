@@ -69,6 +69,8 @@ type MonitoringService struct {
 	telemetry       *application.Telemetry
 	now             func() time.Time
 	responseCadence *responseCadence
+	phaseScheduleMu sync.Mutex
+	phaseLastRuns   map[ExecutionPhase]time.Time
 }
 
 func NewWithTelemetry(client application.MonitoringGateway, cfg config.Config, logger *log.Logger, telemetry *application.Telemetry) *MonitoringService {
@@ -88,6 +90,7 @@ func NewWithTelemetry(client application.MonitoringGateway, cfg config.Config, l
 		telemetry:       telemetry,
 		now:             time.Now,
 		responseCadence: newResponseCadence(),
+		phaseLastRuns:   make(map[ExecutionPhase]time.Time),
 	}
 	service.httpChecker = HTTPCheckFunc(service.performHTTPRequest)
 	service.executors = service.newExecutorRegistry()
@@ -124,7 +127,7 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 			for monitoring := range jobs {
 				if !r.responseCadence.tryStart(monitoring, r.cfg.WebGuardLocation, r.now()) {
 					r.telemetry.DropQueuedJob(string(PhaseResponse), "cadence")
-					r.logger.Printf("Skipping response monitoring until its next cadence window (monitoring_id=%s interval_seconds=%d)", monitoring.ID, monitoring.CheckIntervalSeconds)
+					r.logger.Printf("Skipping response monitoring until its selected interval is due (monitoring_id=%s interval_seconds=%d)", monitoring.ID, monitoring.CheckIntervalSeconds)
 					continue
 				}
 
@@ -152,7 +155,7 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 			continue
 		}
 
-		if !isScheduledResponseWindow(monitoring.ID, r.cfg.WebGuardLocation, responseCheckInterval(monitoring), r.now()) {
+		if !responseDue(monitoring, r.now()) {
 			skippedCadence++
 			continue
 		}
@@ -183,6 +186,10 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 }
 
 func (r *MonitoringService) runSSL(ctx context.Context) error {
+	if !r.allowAuxiliaryPhase(PhaseSSL) {
+		return nil
+	}
+
 	r.logger.Println("Dispatching SSL monitoring jobs...")
 
 	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseSSL))
@@ -250,6 +257,10 @@ func (r *MonitoringService) runSSL(ctx context.Context) error {
 }
 
 func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
+	if !r.allowAuxiliaryPhase(PhaseDomainExpiration) {
+		return nil
+	}
+
 	r.logger.Println("Dispatching domain expiration monitoring jobs...")
 
 	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseDomainExpiration))
@@ -374,6 +385,21 @@ func (r *MonitoringService) workerLimit() int {
 		workers = min(workers, r.cfg.RunMaxConcurrency)
 	}
 	return workers
+}
+
+func (r *MonitoringService) allowAuxiliaryPhase(phase ExecutionPhase) bool {
+	const interval = 5 * time.Minute
+	now := r.now()
+
+	r.phaseScheduleMu.Lock()
+	defer r.phaseScheduleMu.Unlock()
+
+	if previousRun, ok := r.phaseLastRuns[phase]; ok && now.Sub(previousRun) < interval {
+		return false
+	}
+
+	r.phaseLastRuns[phase] = now
+	return true
 }
 
 func (r *MonitoringService) logFetchError(err error) {

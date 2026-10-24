@@ -27,8 +27,10 @@ The current package boundaries and dependency rule are documented in
   - Docker-first local and production setup
   - Liveness: `GET /livez`; readiness: `GET /readyz`; Prometheus metrics: `GET /metrics`
 - **Predictable Scheduling**
-  - Infrastructure checks keep the five-minute dispatcher cadence
-  - HTTP and keyword website checks run at least 15 minutes apart per monitoring and location
+  - The dispatcher polls Core every minute
+  - HTTP and keyword checks run when the selected 1, 5, 10, 15, 30, or 60-minute interval is due, independently per monitoring and location
+  - New monitors with no response at a location are due on the next poll; existing monitors default to 15 minutes
+  - SSL and domain-expiration phases retain their five-minute cadence
 
 ## Getting Started
 
@@ -126,11 +128,14 @@ checks private targets.
 Production deployment and rollback guidance is documented in
 [the production instance runbook](PRODUCTION_RUNBOOK.md).
 
-Core supplies `check_interval_seconds` with each monitoring. The worker honors
-that per-monitoring minimum start-to-start interval for regular response checks
-and reports the executed value with the result. HTTP and keyword checks currently
-use 900 seconds; other active checks retain the documented Core cadence. A
-delayed worker run may execute later, never sooner.
+For the legacy polling path, Core supplies a location-specific `last_response_at`
+and `check_interval_seconds`. The worker polls every minute and starts a
+response check when that location has no prior result or its interval has
+elapsed since the last response. HTTP and keyword monitorings use the selected
+1, 5, 10, 15, 30, or 60-minute interval; each result reports the interval used
+for execution. With job leases enabled, Core owns due-time selection and must
+apply the same per-location rule before returning a response job. SSL and
+domain-expiration polling remains on a five-minute cadence.
 
 The contract and rollout sequence for horizontally scaled workers are in
 [the monitoring job lease protocol](JOB_LEASE_PROTOCOL.md).

@@ -8,12 +8,12 @@ import (
 	"github.com/marcel-breuer/webguard-instance/internal/application"
 )
 
-func RunEveryFiveMinutes(ctx context.Context, logger *log.Logger, task func(context.Context) error) {
-	RunEveryFiveMinutesWithTelemetry(ctx, logger, nil, task)
+func RunEveryMinute(ctx context.Context, logger *log.Logger, task func(context.Context) error) {
+	RunEveryMinuteWithTelemetry(ctx, logger, nil, task)
 }
 
-func RunEveryFiveMinutesWithTelemetry(ctx context.Context, logger *log.Logger, telemetry *application.Telemetry, task func(context.Context) error) {
-	nextRun := nextFiveMinuteBoundary(time.Now())
+func RunEveryMinuteWithTelemetry(ctx context.Context, logger *log.Logger, telemetry *application.Telemetry, task func(context.Context) error) {
+	nextRun := nextMinuteBoundary(time.Now())
 	timer := time.NewTimer(time.Until(nextRun))
 	defer timer.Stop()
 
@@ -36,16 +36,16 @@ func RunEveryFiveMinutesWithTelemetry(ctx context.Context, logger *log.Logger, t
 			if err != nil && logger != nil {
 				logger.Printf("Scheduled run failed: %v", err)
 			}
-			nextRun = nextFiveMinuteBoundary(time.Now())
+			nextRun = nextMinuteBoundary(time.Now())
 			timer.Reset(time.Until(nextRun))
 		}
 	}
 }
 
-func nextFiveMinuteBoundary(now time.Time) time.Time {
-	boundary := now.Truncate(5 * time.Minute)
+func nextMinuteBoundary(now time.Time) time.Time {
+	boundary := now.Truncate(time.Minute)
 	if !boundary.After(now) {
-		boundary = boundary.Add(5 * time.Minute)
+		boundary = boundary.Add(time.Minute)
 	}
 	return boundary
 }
