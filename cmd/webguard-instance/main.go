@@ -94,7 +94,7 @@ func runServe(logger *log.Logger, service monitoringService, cfg config.Config) 
 		}()
 	}
 
-	go scheduler.RunEveryFiveMinutesWithTelemetry(dispatchContext, logger, telemetry, service.RunMonitoring)
+	go scheduler.RunEveryMinuteWithTelemetry(dispatchContext, logger, telemetry, service.RunMonitoring)
 
 	if err := health.StartWithHandler(healthContext, cfg.Address, logger, health.NewHandler(readiness, telemetry)); err != nil {
 		logger.Printf("Health server exited with error: %v", err)

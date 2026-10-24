@@ -834,7 +834,7 @@ func TestRunResponsePostsHTTPStatusCodeForHTTPAndKeywordMonitoring(t *testing.T)
 	}
 }
 
-func TestRunResponseHonorsWebsiteCheckCadenceAndReportsTheExecutedInterval(t *testing.T) {
+func TestRunResponseUsesSelectedIntervalAndReportsTheExecutedInterval(t *testing.T) {
 	t.Parallel()
 
 	client := &fakeCoreClient{responseMonitorings: []monitor.Monitoring{
@@ -849,8 +849,7 @@ func TestRunResponseHonorsWebsiteCheckCadenceAndReportsTheExecutedInterval(t *te
 		return []byte("time=1 ms"), nil
 	}
 
-	website := client.responseMonitorings[0]
-	firstRun := nextDueResponseWindow(website, "de-1", time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC))
+	firstRun := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	runner.now = func() time.Time { return firstRun }
 	if err := runner.runResponse(context.Background()); err != nil {
 		t.Fatalf("first run failed: %v", err)

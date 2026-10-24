@@ -8,19 +8,37 @@ import (
 	"time"
 )
 
-func TestNextFiveMinuteBoundary(t *testing.T) {
+func TestNextMinuteBoundary(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 2, 20, 11, 2, 31, 0, time.UTC)
-	next := nextFiveMinuteBoundary(now)
+	tests := []struct {
+		name string
+		now  time.Time
+		want time.Time
+	}{
+		{
+			name: "mid-minute",
+			now:  time.Date(2026, 2, 20, 11, 2, 31, 0, time.UTC),
+			want: time.Date(2026, 2, 20, 11, 3, 0, 0, time.UTC),
+		},
+		{
+			name: "exact-minute-boundary",
+			now:  time.Date(2026, 2, 20, 11, 2, 0, 0, time.UTC),
+			want: time.Date(2026, 2, 20, 11, 3, 0, 0, time.UTC),
+		},
+	}
 
-	expected := time.Date(2026, 2, 20, 11, 5, 0, 0, time.UTC)
-	if !next.Equal(expected) {
-		t.Fatalf("expected %s, got %s", expected, next)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := nextMinuteBoundary(test.now); !got.Equal(test.want) {
+				t.Fatalf("expected %s, got %s", test.want, got)
+			}
+		})
 	}
 }
 
-func TestRunEveryFiveMinutesReturnsOnCanceledContext(t *testing.T) {
+func TestRunEveryMinuteReturnsOnCanceledContext(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -29,7 +47,7 @@ func TestRunEveryFiveMinutesReturnsOnCanceledContext(t *testing.T) {
 	done := make(chan struct{})
 	taskCalled := make(chan struct{}, 1)
 	go func() {
-		RunEveryFiveMinutes(ctx, log.New(io.Discard, "", 0), func(context.Context) error {
+		RunEveryMinute(ctx, log.New(io.Discard, "", 0), func(context.Context) error {
 			taskCalled <- struct{}{}
 			return nil
 		})
