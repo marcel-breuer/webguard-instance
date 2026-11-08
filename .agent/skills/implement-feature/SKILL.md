@@ -18,14 +18,14 @@ Read `AGENTS.md`, the affected package, existing tests for that package, and any
 
 ## Relevant Project Areas
 
-`cmd/webguard-instance`, `internal/config`, `internal/core`, `internal/monitor`, `internal/runner`, `internal/scheduler`, `internal/server`, `internal/target`.
+`cmd/webguard-instance`, `internal/config`, `internal/application`, `internal/adapters/coreapi`, `internal/domain/monitor`, `internal/adapters/runner`, `internal/adapters/scheduler`, `internal/adapters/health`, `internal/adapters/target`.
 
 ## Procedure
 
 1. Identify the package that owns the behavior.
 2. Follow existing constructor, interface, DTO, and test patterns.
 3. Keep environment parsing in `internal/config`.
-4. Keep Core API details in `internal/core` and DTOs in `internal/monitor`.
+4. Keep Core API details in `internal/adapters/coreapi` and DTOs in `internal/domain/monitor`.
 5. Add the smallest implementation that satisfies the task.
 6. Add or update behavior-focused tests.
 

@@ -3,6 +3,9 @@ services:
     build:
       context: .
       target: development
+    # Keep the development build local instead of inheriting the GHCR image name.
+    image: webguard-instance:dev
+    pull_policy: build
     command: ["go", "run", "./cmd/webguard-instance", "serve"]
     volumes:
       - ./:/app

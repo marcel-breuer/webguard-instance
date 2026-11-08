@@ -47,8 +47,13 @@ statuses, and result payloads. These types do not depend on transports.
 - `adapters/domainlookup` and `adapters/target` isolate RDAP/WHOIS and
   egress-policy details.
 
-`application.ExecutionController` prevents overlapping local runs and applies
-one shared concurrency limit across all executor phases. The next migration
+`application.ExecutionController` prevents overlapping local runs. The worker
+schedules two controllers every minute: one for response checks and one for the
+auxiliary SSL and domain-expiration phases, so slow auxiliary lookups never
+cause response runs to be skipped. Both share one concurrency limit
+(`RUN_MAX_CONCURRENCY`) across all executor phases. A failed Core fetch lets an
+auxiliary phase retry on the next minute instead of waiting for its five-minute
+cadence. The next migration
 step is the Core lease protocol for safe horizontal scaling across instances.
 When `WEBGUARD_JOB_LEASES_ENABLED` is set, the runner claims one mixed,
 capability-aware batch instead of fetching the three legacy phase lists. Core

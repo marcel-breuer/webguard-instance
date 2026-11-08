@@ -57,6 +57,8 @@ type Lookup struct {
 	httpClient  *http.Client
 	dialer      *net.Dialer
 	rdapBaseURL string
+	// dialContext overrides WHOIS connections in tests; nil uses dialer.
+	dialContext func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 func New(timeout time.Duration) *Lookup {
@@ -256,7 +258,11 @@ func (l *Lookup) queryWHOIS(ctx context.Context, server, query string) (string, 
 		dialer = *l.dialer
 	}
 
-	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(server, "43"))
+	dial := dialer.DialContext
+	if l.dialContext != nil {
+		dial = l.dialContext
+	}
+	connection, err := dial(ctx, "tcp", net.JoinHostPort(server, "43"))
 	if err != nil {
 		return "", err
 	}

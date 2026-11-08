@@ -13,21 +13,59 @@ type MonitoringRunner interface {
 	RunMonitoring(context.Context) error
 }
 
-// ExecutionController prevents overlapping runs and provides one shared
-// concurrency budget to every phase of a monitoring run.
+// MonitoringRunnerFunc adapts a plain function to MonitoringRunner.
+type MonitoringRunnerFunc func(context.Context) error
+
+func (f MonitoringRunnerFunc) RunMonitoring(ctx context.Context) error {
+	return f(ctx)
+}
+
+// ExecutionLimiter bounds concurrently executing checks. Sharing one limiter
+// between controllers keeps independently scheduled runs within a single
+// process-wide concurrency budget.
+type ExecutionLimiter struct {
+	slots chan struct{}
+}
+
+func NewExecutionLimiter(maxConcurrency int) *ExecutionLimiter {
+	return &ExecutionLimiter{slots: make(chan struct{}, max(1, maxConcurrency))}
+}
+
+type ExecutionControllerOption func(*ExecutionController)
+
+// WithExecutionLimiter replaces the controller's own limiter with a shared one.
+func WithExecutionLimiter(limiter *ExecutionLimiter) ExecutionControllerOption {
+	return func(c *ExecutionController) {
+		if limiter != nil {
+			c.limiter = limiter
+		}
+	}
+}
+
+// WithRunName prefixes run IDs so logs of concurrently scheduled controllers
+// stay distinguishable.
+func WithRunName(name string) ExecutionControllerOption {
+	return func(c *ExecutionController) {
+		c.name = name
+	}
+}
+
+// ExecutionController prevents overlapping runs and provides one concurrency
+// budget to every phase of a monitoring run.
 type ExecutionController struct {
-	runner         MonitoringRunner
-	logger         *log.Logger
-	maxConcurrency int
-	telemetry      *Telemetry
-	mu             sync.Mutex
-	summaryMu      sync.RWMutex
-	lastSummary    RunSummary
-	stateMu        sync.RWMutex
-	draining       bool
-	active         bool
-	idle           chan struct{}
-	runSequence    atomic.Uint64
+	runner      MonitoringRunner
+	logger      *log.Logger
+	limiter     *ExecutionLimiter
+	name        string
+	telemetry   *Telemetry
+	mu          sync.Mutex
+	summaryMu   sync.RWMutex
+	lastSummary RunSummary
+	stateMu     sync.RWMutex
+	draining    bool
+	active      bool
+	idle        chan struct{}
+	runSequence atomic.Uint64
 }
 
 type RunSummary struct {
@@ -37,16 +75,17 @@ type RunSummary struct {
 	Err        error
 }
 
-func NewExecutionControllerWithTelemetry(runner MonitoringRunner, logger *log.Logger, maxConcurrency int, telemetry *Telemetry) *ExecutionController {
-	if maxConcurrency < 1 {
-		maxConcurrency = 1
-	}
+func NewExecutionControllerWithTelemetry(runner MonitoringRunner, logger *log.Logger, maxConcurrency int, telemetry *Telemetry, options ...ExecutionControllerOption) *ExecutionController {
 	if telemetry == nil {
 		telemetry = NewTelemetry()
 	}
 	idle := make(chan struct{})
 	close(idle)
-	return &ExecutionController{runner: runner, logger: logger, maxConcurrency: maxConcurrency, telemetry: telemetry, idle: idle}
+	controller := &ExecutionController{runner: runner, logger: logger, limiter: NewExecutionLimiter(maxConcurrency), telemetry: telemetry, idle: idle}
+	for _, option := range options {
+		option(controller)
+	}
+	return controller
 }
 
 func (c *ExecutionController) RunMonitoring(ctx context.Context) error {
@@ -80,10 +119,13 @@ func (c *ExecutionController) RunMonitoring(ctx context.Context) error {
 
 	startedAt := time.Now()
 	runID := fmt.Sprintf("run-%d", c.runSequence.Add(1))
+	if c.name != "" {
+		runID = c.name + "-" + runID
+	}
 	if c.logger != nil {
 		c.logger.Printf("run_id=%s monitoring run started", runID)
 	}
-	err := c.runner.RunMonitoring(withExecutionLimiter(withRunID(ctx, runID), make(chan struct{}, c.maxConcurrency)))
+	err := c.runner.RunMonitoring(withExecutionLimiter(withRunID(ctx, runID), c.limiter.slots))
 	finishedAt := time.Now()
 	c.storeSummary(RunSummary{StartedAt: startedAt, FinishedAt: finishedAt, Err: err})
 	outcome := "success"
@@ -99,7 +141,11 @@ func (c *ExecutionController) RunMonitoring(ctx context.Context) error {
 
 func (c *ExecutionController) recordSkippedRun() {
 	if c.logger != nil {
-		c.logger.Println("Monitoring run skipped because another run is active or the instance is draining.")
+		if c.name != "" {
+			c.logger.Printf("Monitoring run skipped because another %s run is active or the instance is draining.", c.name)
+		} else {
+			c.logger.Println("Monitoring run skipped because another run is active or the instance is draining.")
+		}
 	}
 	now := time.Now()
 	c.storeSummary(RunSummary{StartedAt: now, FinishedAt: now, Skipped: true})

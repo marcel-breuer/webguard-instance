@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"slices"
@@ -169,9 +170,9 @@ func TestHTTPAndKeywordExecutorsShareInjectedHTTPChecker(t *testing.T) {
 
 	var calls []monitor.Type
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	r.httpChecker = HTTPCheckFunc(func(_ context.Context, monitoring monitor.Monitoring) (int, string, error) {
+	r.httpChecker = HTTPCheckFunc(func(_ context.Context, monitoring monitor.Monitoring) (int, string, time.Duration, error) {
 		calls = append(calls, monitoring.Type)
-		return http.StatusOK, "expected keyword", nil
+		return http.StatusOK, "expected keyword", 0, nil
 	})
 
 	for _, monitoring := range []monitor.Monitoring{
@@ -193,8 +194,8 @@ func TestResponseExecutorsPreserveFailureEvidenceWithoutResponseTime(t *testing.
 	t.Parallel()
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	r.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
-		return 0, "", errors.New("connection refused")
+	r.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, time.Duration, error) {
+		return 0, "", 0, errors.New("connection refused")
 	})
 	r.pingExecutor = func(context.Context, string, int) ([]byte, error) {
 		return []byte("100% packet loss"), errors.New("exit status 1")
@@ -280,7 +281,7 @@ func TestPerformHTTPRequestGETWithHeadersAndBasicAuth(t *testing.T) {
 	defer server.Close()
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	statusCode, body, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	statusCode, body, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:       server.URL,
 		Timeout:      2,
 		HTTPMethod:   monitor.HTTPMethodGet,
@@ -303,7 +304,7 @@ func TestPerformHTTPRequestRejectsPrivateTargetsByDefault(t *testing.T) {
 	t.Parallel()
 
 	r := newTestService(nil, config.Config{}, log.New(io.Discard, "", 0))
-	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	_, _, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     "http://127.0.0.1:8080",
 		HTTPMethod: monitor.HTTPMethodGet,
 	})
@@ -321,7 +322,7 @@ func TestPerformHTTPRequestAllowsPrivateTargetsWhenConfigured(t *testing.T) {
 	defer server.Close()
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	statusCode, body, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	statusCode, body, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -343,7 +344,7 @@ func TestPerformHTTPRequestRejectsOversizedResponse(t *testing.T) {
 	defer server.Close()
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	_, _, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -362,7 +363,7 @@ func TestPerformHTTPRequestRejectsSelfSignedTLS(t *testing.T) {
 	defer server.Close()
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	_, _, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -398,7 +399,7 @@ func TestPerformHTTPRequestPOSTBody(t *testing.T) {
 	defer server.Close()
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	statusCode, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	statusCode, _, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     server.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodPost,
@@ -427,7 +428,7 @@ func TestPerformHTTPRequestFollowsRedirectAcrossHosts(t *testing.T) {
 	defer redirectServer.Close()
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	statusCode, body, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	statusCode, body, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     redirectServer.URL,
 		Timeout:    2,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -542,7 +543,7 @@ func TestPerformHTTPRequestRetriesOnTransportError(t *testing.T) {
 
 	r := newTestService(nil, config.Config{AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
 	start := time.Now()
-	_, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
+	_, _, _, err := r.performHTTPRequest(context.Background(), monitor.Monitoring{
 		Target:     "http://127.0.0.1:1",
 		Timeout:    1,
 		HTTPMethod: monitor.HTTPMethodGet,
@@ -556,13 +557,16 @@ func TestPerformHTTPRequestRetriesOnTransportError(t *testing.T) {
 }
 
 func TestObservePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
+	stubPingResolver(t, map[string][]netip.Addr{"example.com": {netip.MustParseAddr("93.184.216.34")}})
+
 	testCases := []struct {
-		name   string
-		target string
+		name     string
+		target   string
+		expected string
 	}{
-		{name: "hostname", target: "example.com"},
-		{name: "ipv4", target: "8.8.8.8"},
-		{name: "ipv6", target: "2001:4860:4860::8888"},
+		{name: "hostname", target: "example.com", expected: "93.184.216.34"},
+		{name: "ipv4", target: "8.8.8.8", expected: "8.8.8.8"},
+		{name: "ipv6", target: "2001:4860:4860::8888", expected: "2001:4860:4860::8888"},
 	}
 
 	for _, testCase := range testCases {
@@ -590,8 +594,8 @@ func TestObservePingMonitoringSupportsHostnameAndIPTargets(t *testing.T) {
 			if *responseTime != 12.34 {
 				t.Fatalf("expected response time 12.34, got %v", *responseTime)
 			}
-			if receivedHost != testCase.target {
-				t.Fatalf("expected ping target %q, got %q", testCase.target, receivedHost)
+			if receivedHost != testCase.expected {
+				t.Fatalf("expected ping target %q, got %q", testCase.expected, receivedHost)
 			}
 			if receivedTimeout != 2 {
 				t.Fatalf("expected timeout 2, got %d", receivedTimeout)

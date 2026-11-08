@@ -58,7 +58,16 @@ func SSLAddressAndServerName(rawTarget string) (string, string, error) {
 	return net.JoinHostPort(host, parsedPort), host, nil
 }
 
-func HTTPURL(ctx context.Context, rawTarget string, policy EgressPolicy) (*url.URL, error) {
+// Resolver resolves and validates target hosts. A zero Resolver uses
+// net.DefaultResolver.
+type Resolver struct {
+	LookupNetIP func(ctx context.Context, network, host string) ([]netip.Addr, error)
+}
+
+// HTTPURL parses and syntactically validates an HTTP(S) monitoring target.
+// It does not resolve the host: every connection goes through SafeDialContext,
+// which resolves and validates the addresses it actually dials.
+func HTTPURL(rawTarget string, policy EgressPolicy) (*url.URL, error) {
 	target := strings.TrimSpace(rawTarget)
 	if target == "" {
 		return nil, fmt.Errorf("target is empty")
@@ -79,26 +88,25 @@ func HTTPURL(ctx context.Context, rawTarget string, policy EgressPolicy) (*url.U
 	if parsed.User != nil {
 		return nil, fmt.Errorf("target URL must not contain credentials")
 	}
-	if err := ValidateHost(ctx, parsed.Hostname(), policy); err != nil {
+	if _, err := checkHostLiteral(parsed.Hostname(), policy); err != nil {
 		return nil, err
 	}
 	return parsed, nil
 }
 
 func ValidateHost(ctx context.Context, host string, policy EgressPolicy) error {
-	host = strings.Trim(strings.TrimSpace(host), "[]")
-	if host == "" {
-		return fmt.Errorf("target host is empty")
-	}
 	if policy.AllowPrivate {
-		return nil
+		_, err := checkHostLiteral(host, policy)
+		return err
 	}
-	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
-		return fmt.Errorf("private target host is not allowed: %s", host)
-	}
-
-	_, err := resolveHostIPs(ctx, host, policy)
+	_, err := ResolveHost(ctx, host, policy)
 	return err
+}
+
+// ResolveHost resolves and validates host with net.DefaultResolver. Callers
+// should connect to the returned addresses instead of resolving host again.
+func ResolveHost(ctx context.Context, host string, policy EgressPolicy) ([]netip.Addr, error) {
+	return Resolver{}.ResolveHost(ctx, host, policy)
 }
 
 func SafeDialContext(policy EgressPolicy) func(context.Context, string, string) (net.Conn, error) {
@@ -111,23 +119,63 @@ func SafeDialContext(policy EgressPolicy) func(context.Context, string, string) 
 		if policy.AllowPrivate {
 			return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
 		}
-		ips, err := resolveHostIPs(ctx, host, policy)
+		ips, err := ResolveHost(ctx, host, policy)
 		if err != nil {
 			return nil, err
 		}
-		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		return dialFirst(ctx, dialer.DialContext, network, ips, port)
 	}
 }
 
-func resolveHostIPs(ctx context.Context, host string, policy EgressPolicy) ([]netip.Addr, error) {
-	if addr, err := netip.ParseAddr(host); err == nil {
-		if !policy.AllowPrivate && isUnsafeAddress(addr) {
-			return nil, fmt.Errorf("private target address is not allowed: %s", host)
+func dialFirst(ctx context.Context, dial func(context.Context, string, string) (net.Conn, error), network string, ips []netip.Addr, port string) (net.Conn, error) {
+	lastErr := fmt.Errorf("no addresses to dial")
+	for _, ip := range ips {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
+		conn, err := dial(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+func checkHostLiteral(host string, policy EgressPolicy) (string, error) {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return "", fmt.Errorf("target host is empty")
+	}
+	if policy.AllowPrivate {
+		return host, nil
+	}
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return "", fmt.Errorf("private target host is not allowed: %s", host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil && isUnsafeAddress(addr) {
+		return "", fmt.Errorf("private target address is not allowed: %s", host)
+	}
+	return host, nil
+}
+
+// ResolveHost resolves host once and validates every resulting address against
+// the egress policy. With AllowPrivate the host is still resolved, but no
+// address is rejected.
+func (r Resolver) ResolveHost(ctx context.Context, host string, policy EgressPolicy) ([]netip.Addr, error) {
+	host, err := checkHostLiteral(host, policy)
+	if err != nil {
+		return nil, err
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
 		return []netip.Addr{addr}, nil
 	}
 
-	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	lookup := r.LookupNetIP
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupNetIP
+	}
+	ips, err := lookup(ctx, "ip", host)
 	if err != nil {
 		return nil, err
 	}

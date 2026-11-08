@@ -61,15 +61,17 @@ Final output SHOULD normally contain only what changed, which files changed, whi
 - Main entry point: `cmd/webguard-instance/main.go`.
 - Primary packages:
   - `internal/config`: environment-derived runtime configuration.
-  - `internal/core`: WebGuard Core HTTP API client.
-  - `internal/monitor`: monitoring DTOs, payloads, enum-like types, and flexible JSON parsing.
-  - `internal/runner`: monitoring orchestration and check execution.
-  - `internal/domainlookup`: domain lookup integration.
-  - `internal/scheduler`: five-minute scheduling.
-  - `internal/server`: `/` and `/health` health endpoints.
-  - `internal/target`: target normalization helpers.
+  - `internal/application`: run coordination, execution control, gateway ports, and telemetry.
+  - `internal/domain/monitor`: monitoring DTOs, payloads, enum-like types, and flexible JSON parsing.
+  - `internal/adapters/coreapi`: WebGuard Core HTTP API client.
+  - `internal/adapters/runner`: monitoring orchestration and check execution.
+  - `internal/adapters/domainlookup`: RDAP and WHOIS domain lookup integration.
+  - `internal/adapters/scheduler`: scheduling on every minute boundary.
+  - `internal/adapters/health`: health, readiness, and metrics endpoints.
+  - `internal/adapters/target`: target normalization helpers.
+- Scheduling: a run starts every minute. Response checks honor each monitoring's check interval; SSL and domain-expiration phases still run at most every five minutes.
 - Runtime model: Docker-first Go service built from `Dockerfile`, composed by `compose.yml` and `docker-compose.override.yml`.
-- CI runs Go formatting, vet, tests, binary build, and a production Docker image build in `.github/workflows/ci.yml`.
+- CI runs Go formatting, vet, tests, race-detector tests, `govulncheck`, binary build, and a production Docker image build in `.github/workflows/ci.yml`.
 - Release image publishing and tag changelog generation are defined in `.github/workflows/docker-image.yml`.
 
 ## Source of Truth
@@ -101,12 +103,14 @@ Prefer project-defined Docker and Docker Compose commands over host tools or glo
 For this project, the effective local development service is:
 
 ```bash
-docker compose config
-docker compose build webguard-instance
-docker compose run --rm webguard-instance go test ./...
+docker compose -f compose.yml -f docker-compose.override.yml config
+docker compose -f compose.yml -f docker-compose.override.yml build webguard-instance
+docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test ./...
 ```
 
-The production image has `webguard-instance` as entrypoint. If `docker compose run ... go test` is interpreted as an application command, rebuild the development target first with `docker compose build webguard-instance`.
+The override builds the `development` target as the local image `webguard-instance:dev` and never pulls the published GHCR image. The production image has `webguard-instance` as entrypoint, so Go commands only work against the development target.
+
+Use `sh -c`, not `sh -lc`, for shell one-liners in the container: the login shell resets `PATH` and fails with `sh: go: not found`.
 
 ## Language and Framework Standards
 
@@ -124,11 +128,11 @@ The production image has `webguard-instance` as entrypoint. If `docker compose r
 ## Architecture Rules
 
 - `cmd/webguard-instance` MUST remain the composition boundary for configuration, logging, service construction, and command dispatch.
-- Business logic for monitoring execution belongs in `internal/runner` or a focused package under `internal/`.
-- WebGuard Core API request construction and response handling belong in `internal/core`.
-- API DTOs and monitoring payload types belong in `internal/monitor`.
-- Health endpoint behavior belongs in `internal/server`.
-- Scheduling behavior belongs in `internal/scheduler`.
+- Business logic for monitoring execution belongs in `internal/adapters/runner`, `internal/application`, or a focused package under `internal/`.
+- WebGuard Core API request construction and response handling belong in `internal/adapters/coreapi`.
+- API DTOs and monitoring payload types belong in `internal/domain/monitor`.
+- Health endpoint behavior belongs in `internal/adapters/health`.
+- Scheduling behavior belongs in `internal/adapters/scheduler`.
 - Environment parsing belongs in `internal/config`; do not read environment variables throughout unrelated packages.
 - External integrations MUST be behind interfaces when tests or alternate implementations need isolation.
 - Concurrent code MUST honor context cancellation and avoid goroutine leaks.
@@ -169,28 +173,28 @@ Every test change or test review must follow this process:
 1. Run the full suite in Docker:
 
    ```bash
-   docker compose run --rm webguard-instance go test ./...
+   docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test ./...
    ```
 
 2. Run coverage in Docker and inspect package-level weak spots:
 
    ```bash
-   docker compose run --rm webguard-instance go test -cover ./...
+   docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test -cover ./...
    ```
 
 3. Repeat timing-sensitive or concurrency-heavy packages when they were touched:
 
    ```bash
-   docker compose run --rm webguard-instance go test -count=10 ./internal/runner ./internal/server ./internal/scheduler
+   docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test -count=10 ./internal/adapters/runner ./internal/adapters/health ./internal/adapters/scheduler
    ```
 
-4. Try the race detector when the Docker image supports it:
+4. Run the race detector in the Debian-based Go image, because the Alpine development image has no C toolchain:
 
    ```bash
-   docker compose run --rm -e CGO_ENABLED=1 webguard-instance go test -race ./...
+   docker run --rm -v "$PWD":/app -w /app golang:1.26.1 go test -race ./...
    ```
 
-   The current Alpine development image may need a C compiler package before this works. If the race detector cannot run, state that clearly in the handoff.
+   If the race detector cannot run, state that clearly in the handoff.
 
 ## Test Design Rules
 
@@ -209,11 +213,10 @@ Every test change or test review must follow this process:
 
 When adding or optimizing tests, prioritize these areas first:
 
-- `internal/domainlookup`: RDAP status handling, malformed RDAP JSON, registrar parsing, WHOIS fallback behavior, temporary errors, unavailable domains, invalid targets.
-- `internal/monitor`: invalid flexible JSON values, boolean parsing variants, optional integer parsing, malformed heartbeat timestamps.
-- `internal/target`: host extraction edge cases, IPv6 host/port forms, private hostname rejection, DNS resolution failures.
+- `internal/domain/monitor`: invalid flexible JSON values, boolean parsing variants, optional integer parsing, malformed heartbeat timestamps.
+- `internal/adapters/target`: host extraction edge cases, IPv6 host/port forms, private hostname rejection, DNS resolution failures.
 - `cmd/webguard-instance`: behavior when `RunMonitoring` returns an error.
-- `internal/runner`: retry behavior without real sleeps, ping execution without global mutation, response/SSL/domain phase dispatch with exact type assertions.
+- `internal/adapters/runner`: retry behavior without real sleeps, ping execution without global mutation, response/SSL/domain phase dispatch with exact type assertions.
 
 ## Validation Commands
 
@@ -222,14 +225,15 @@ Prefer running commands inside the project Docker environment when technically p
 | Purpose | Command |
 | --- | --- |
 | Compose validation | `docker compose -f compose.yml -f docker-compose.override.yml config` |
-| Development image build | `docker compose build webguard-instance` |
+| Development image build | `docker compose -f compose.yml -f docker-compose.override.yml build webguard-instance` |
 | Dependency download | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go mod download` |
-| Formatting check | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance sh -lc 'test -z "$(gofmt -l .)"'` |
+| Formatting check | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance sh -c 'test -z "$(gofmt -l .)"'` |
 | Vet | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go vet ./...` |
 | Tests | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test ./...` |
 | Coverage | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test -cover ./...` |
-| Timing-sensitive repeats | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test -count=10 ./internal/runner ./internal/server ./internal/scheduler` |
-| Race detector | `docker compose -f compose.yml -f docker-compose.override.yml run --rm -e CGO_ENABLED=1 webguard-instance go test -race ./...` |
+| Timing-sensitive repeats | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go test -count=10 ./internal/adapters/runner ./internal/adapters/health ./internal/adapters/scheduler` |
+| Race detector | `docker run --rm -v "$PWD":/app -w /app golang:1.26.1 go test -race ./...` |
+| Vulnerability check | `docker run --rm -v "$PWD":/app -w /app golang:1.26.1 go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...` |
 | Binary build | `docker compose -f compose.yml -f docker-compose.override.yml run --rm webguard-instance go build ./cmd/webguard-instance` |
 | Production image build | `docker build --target production -t webguard-instance:test .` |
 | Local development | `./start-dev.sh` |
@@ -280,7 +284,7 @@ When finishing test-related work, report which Docker commands were run, whether
   - `POST /api/instances/monitoring-responses`
   - `POST /api/instances/ssl-results`
   - `POST /api/instances/domain-results`
-- Health endpoints are `GET /` and `GET /health`; other methods return `405`.
+- Health endpoints: `GET /`, `GET /health`, and `GET /livez` report liveness; `GET /readyz` reports readiness and returns `503` while not ready; `GET /metrics` serves Prometheus text metrics. Other methods return `405`. The Compose healthcheck uses `/livez`.
 - Preserve request headers, JSON field names, status handling, and timeout behavior unless the task explicitly changes the contract.
 - Use test servers or fakes for Core API behavior in tests.
 - External DNS, ping, TLS, and domain lookup behavior MUST be isolated in tests where feasible.
@@ -290,7 +294,7 @@ When finishing test-related work, report which Docker commands were run, whether
 - Docker is the preferred execution environment.
 - `Dockerfile` has `development`, `builder`, and `production` targets; preserve that separation.
 - `compose.yml` describes production-style service settings, healthcheck, ports, env file, restart policy, and image name.
-- `docker-compose.override.yml` switches the service to the development target and mounts the repository.
+- `docker-compose.override.yml` switches the service to the development target, tags it as the local `webguard-instance:dev` image with `pull_policy: build`, and mounts the repository.
 - Do not commit local `.env` values.
 - Keep healthcheck behavior aligned with the service health endpoints.
 
