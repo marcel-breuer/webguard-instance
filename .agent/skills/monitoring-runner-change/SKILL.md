@@ -14,11 +14,11 @@ Do not use for Core API client-only changes or documentation-only tasks.
 
 ## Required Context
 
-Read `AGENTS.md`, `internal/runner`, related package tests, and affected DTOs in `internal/monitor`.
+Read `AGENTS.md`, `internal/adapters/runner`, related package tests, and affected DTOs in `internal/domain/monitor`.
 
 ## Relevant Project Areas
 
-`internal/runner`, `internal/domainlookup`, `internal/target`, `internal/monitor`, `internal/scheduler`.
+`internal/adapters/runner`, `internal/adapters/domainlookup`, `internal/adapters/target`, `internal/domain/monitor`, `internal/adapters/scheduler`.
 
 ## Procedure
 

@@ -18,7 +18,7 @@ Read `AGENTS.md`, the affected code or config, related tests, and relevant Docke
 
 ## Relevant Project Areas
 
-`internal/core`, `internal/config`, `internal/runner`, `internal/server`, Docker files, GitHub Actions, `.env.example`.
+`internal/adapters/coreapi`, `internal/config`, `internal/adapters/runner`, `internal/adapters/health`, Docker files, GitHub Actions, `.env.example`.
 
 ## Procedure
 
