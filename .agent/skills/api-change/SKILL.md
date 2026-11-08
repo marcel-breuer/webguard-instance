@@ -6,7 +6,7 @@ Change HTTP behavior or WebGuard Core integration contracts safely.
 
 ## When to Use
 
-Use for changes to `internal/core`, `internal/monitor`, `internal/server`, endpoint paths, headers, JSON payloads, status handling, or health endpoints.
+Use for changes to `internal/adapters/coreapi`, `internal/domain/monitor`, `internal/adapters/health`, endpoint paths, headers, JSON payloads, status handling, or health endpoints.
 
 ## When Not to Use
 
@@ -18,7 +18,7 @@ Read `AGENTS.md`, affected API code, existing client/server tests, and README AP
 
 ## Relevant Project Areas
 
-`internal/core`, `internal/monitor`, `internal/server`, `cmd/webguard-instance`, README API contract section.
+`internal/adapters/coreapi`, `internal/domain/monitor`, `internal/adapters/health`, `cmd/webguard-instance`, README API contract section.
 
 ## Procedure
 

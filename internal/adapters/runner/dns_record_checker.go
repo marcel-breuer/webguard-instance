@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/marcel-breuer/webguard-instance/internal/domain/monitor"
@@ -28,7 +29,7 @@ type DNSRecordChecker struct {
 
 func NewDNSRecordChecker(resolver DNSRecordResolver, logger *log.Logger) *DNSRecordChecker {
 	if resolver == nil {
-		resolver = systemDNSRecordResolver{}
+		resolver = defaultSystemDNSRecordResolver
 	}
 	return &DNSRecordChecker{
 		resolver: resolver,
@@ -111,42 +112,97 @@ func (c *DNSRecordChecker) logf(format string, args ...any) {
 	}
 }
 
-type systemDNSRecordResolver struct{}
+const resolvConfPath = "/etc/resolv.conf"
 
-func (systemDNSRecordResolver) Resolve(ctx context.Context, target string, recordType string, timeout time.Duration) ([]string, error) {
+// defaultSystemDNSRecordResolver is shared so the resolver configuration is
+// loaded once per process instead of once per query or checker.
+var defaultSystemDNSRecordResolver = newSystemDNSRecordResolver(func() ([]string, error) {
+	return loadDNSServers(resolvConfPath)
+})
+
+type systemDNSRecordResolver struct {
+	loadServers func() ([]string, error)
+
+	mu      sync.Mutex
+	servers []string
+}
+
+func newSystemDNSRecordResolver(loadServers func() ([]string, error)) *systemDNSRecordResolver {
+	return &systemDNSRecordResolver{loadServers: loadServers}
+}
+
+func loadDNSServers(path string) ([]string, error) {
+	config, err := dns.ClientConfigFromFile(path)
+	if err != nil {
+		return nil, err
+	}
+	servers := make([]string, 0, len(config.Servers))
+	for _, server := range config.Servers {
+		servers = append(servers, net.JoinHostPort(server, config.Port))
+	}
+	return servers, nil
+}
+
+// resolverServers caches only a successful configuration so a temporarily
+// unreadable resolv.conf does not disable DNS checks for the process lifetime.
+func (r *systemDNSRecordResolver) resolverServers() ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.servers) > 0 {
+		return r.servers, nil
+	}
+	servers, err := r.loadServers()
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolver configuration unavailable: %w", err)
+	}
+	if len(servers) == 0 {
+		return nil, errors.New("DNS resolver configuration unavailable: no nameservers configured")
+	}
+	r.servers = servers
+	return servers, nil
+}
+
+func (r *systemDNSRecordResolver) Resolve(ctx context.Context, target string, recordType string, timeout time.Duration) ([]string, error) {
 	qtype, ok := dns.StringToType[strings.ToUpper(strings.TrimSpace(recordType))]
 	if !ok {
 		return nil, fmt.Errorf("unsupported DNS record type: %s", recordType)
 	}
 
-	config, err := dns.ClientConfigFromFile("/etc/resolv.conf")
-	if err != nil || len(config.Servers) == 0 {
-		return nil, fmt.Errorf("DNS resolver configuration unavailable: %w", err)
+	servers, err := r.resolverServers()
+	if err != nil {
+		return nil, err
 	}
 
-	server := net.JoinHostPort(config.Servers[0], config.Port)
 	message := new(dns.Msg)
 	message.SetQuestion(dns.Fqdn(strings.TrimSpace(target)), qtype)
 	message.RecursionDesired = true
 
-	client := &dns.Client{
-		Net:     "udp",
-		Timeout: timeout,
-	}
-
 	queryCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	response, _, err := client.ExchangeContext(queryCtx, message, server)
-	if err != nil {
-		return nil, err
-	}
-	if response != nil && response.Truncated {
-		tcpClient := &dns.Client{Net: "tcp", Timeout: timeout}
-		response, _, err = tcpClient.ExchangeContext(queryCtx, message, server)
-		if err != nil {
-			return nil, err
+	var response *dns.Msg
+	var queryErr error
+	for index, server := range servers {
+		if queryCtx.Err() != nil {
+			break
 		}
+		// Split the remaining budget so one unresponsive server cannot consume
+		// the whole timeout before the next configured server is tried.
+		attemptTimeout := timeout
+		if deadline, ok := queryCtx.Deadline(); ok {
+			attemptTimeout = time.Until(deadline) / time.Duration(len(servers)-index)
+		}
+		response, queryErr = exchangeDNS(queryCtx, message, server, attemptTimeout)
+		if queryErr == nil {
+			break
+		}
+	}
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	if response == nil && queryCtx.Err() != nil {
+		return nil, queryCtx.Err()
 	}
 	if response == nil {
 		return nil, errors.New("empty DNS response")
@@ -194,6 +250,25 @@ func (systemDNSRecordResolver) Resolve(ctx context.Context, target string, recor
 	}
 
 	return values, nil
+}
+
+func exchangeDNS(ctx context.Context, message *dns.Msg, server string, timeout time.Duration) (*dns.Msg, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	client := &dns.Client{Net: "udp", Timeout: timeout}
+	response, _, err := client.ExchangeContext(attemptCtx, message, server)
+	if err != nil {
+		return nil, err
+	}
+	if response != nil && response.Truncated {
+		tcpClient := &dns.Client{Net: "tcp", Timeout: timeout}
+		response, _, err = tcpClient.ExchangeContext(attemptCtx, message, server)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return response, nil
 }
 
 func normalizeDNSRecordValues(values []string, recordType string) ([]string, error) {

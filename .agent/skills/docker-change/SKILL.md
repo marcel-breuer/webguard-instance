@@ -24,7 +24,7 @@ Read `AGENTS.md`, Docker files, README Docker commands, and CI image-build steps
 
 1. Preserve development, builder, and production target separation.
 2. Keep production image minimal and non-root unless explicitly changed.
-3. Keep healthchecks aligned with `/health`.
+3. Keep healthchecks aligned with the `/livez` liveness endpoint.
 4. Preserve Compose environment and port behavior unless the task requires changes.
 5. Avoid baking secrets or local `.env` values into images.
 
