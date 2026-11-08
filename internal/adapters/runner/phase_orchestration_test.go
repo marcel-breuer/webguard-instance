@@ -160,8 +160,8 @@ func TestResponseRunCompletesWhileAuxiliaryRunIsStillActive(t *testing.T) {
 	telemetry := application.NewTelemetry()
 	cfg := config.Config{WebGuardLocation: "de-1", QueueDefaultWorkers: 2, RunMaxConcurrency: 2}
 	service := NewWithTelemetry(client, cfg, log.New(io.Discard, "", 0), telemetry)
-	service.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
-		return http.StatusOK, "", nil
+	service.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, time.Duration, error) {
+		return http.StatusOK, "", 0, nil
 	})
 	lookup := blockingDomainLookup{started: make(chan struct{}, 1), release: make(chan struct{})}
 	service.domainLookup = lookup
