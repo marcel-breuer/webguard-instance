@@ -41,19 +41,24 @@ const fixedPingTimeoutSeconds = 5
 
 var pingLatencyPattern = regexp.MustCompile(`time[=<]([0-9]+(?:\.[0-9]+)?)\s*ms`)
 
+// resolvePingHost is replaced in sequential tests to avoid real DNS lookups.
+var resolvePingHost = target.ResolveHost
+
 type DomainLookup interface {
 	Lookup(ctx context.Context, target string) (domainlookup.Result, error)
 }
 
 type PingCommandExecutor func(context.Context, string, int) ([]byte, error)
 
+// HTTPChecker performs one HTTP check and returns the status code, the body and
+// the duration of the request that produced that result.
 type HTTPChecker interface {
-	Check(context.Context, monitor.Monitoring) (int, string, error)
+	Check(context.Context, monitor.Monitoring) (int, string, time.Duration, error)
 }
 
-type HTTPCheckFunc func(context.Context, monitor.Monitoring) (int, string, error)
+type HTTPCheckFunc func(context.Context, monitor.Monitoring) (int, string, time.Duration, error)
 
-func (f HTTPCheckFunc) Check(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
+func (f HTTPCheckFunc) Check(ctx context.Context, monitoring monitor.Monitoring) (int, string, time.Duration, error) {
 	return f(ctx, monitoring)
 }
 
@@ -412,15 +417,14 @@ func (r *MonitoringService) logFetchError(err error) {
 }
 
 func (r *MonitoringService) observeHTTPMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int, monitor.RawObservation) {
-	start := time.Now()
-	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: start.UTC()}
-	statusCode, _, err := r.httpCheck(ctx, monitoring)
+	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: time.Now().UTC()}
+	statusCode, _, duration, err := r.httpCheck(ctx, monitoring)
 	if err != nil {
 		observation.TransportError = stringPointer("http_transport_error")
 		return monitor.StatusDown, nil, nil, observation
 	}
 	httpStatusCode := intPointer(statusCode)
-	responseTime := roundMilliseconds(time.Since(start))
+	responseTime := roundMilliseconds(duration)
 	observation.HTTPStatusCode = httpStatusCode
 	observation.ResponseTime = &responseTime
 	if statusCode >= http.StatusOK && statusCode < http.StatusBadRequest {
@@ -430,16 +434,15 @@ func (r *MonitoringService) observeHTTPMonitoring(ctx context.Context, monitorin
 }
 
 func (r *MonitoringService) observeKeywordMonitoring(ctx context.Context, monitoring monitor.Monitoring) (monitor.Status, *float64, *int, monitor.RawObservation) {
-	start := time.Now()
-	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: start.UTC()}
-	statusCode, body, err := r.httpCheck(ctx, monitoring)
+	observation := monitor.RawObservation{Type: monitoring.Type, ObservedAt: time.Now().UTC()}
+	statusCode, body, duration, err := r.httpCheck(ctx, monitoring)
 	if err != nil {
 		observation.TransportError = stringPointer("http_transport_error")
 		observation.KeywordMatched = boolPointer(false)
 		return monitor.StatusDown, nil, nil, observation
 	}
 	httpStatusCode := intPointer(statusCode)
-	responseTime := roundMilliseconds(time.Since(start))
+	responseTime := roundMilliseconds(duration)
 	matched := strings.Contains(body, monitoring.Keyword)
 	observation.HTTPStatusCode = httpStatusCode
 	observation.ResponseTime = &responseTime
@@ -450,7 +453,7 @@ func (r *MonitoringService) observeKeywordMonitoring(ctx context.Context, monito
 	return monitor.StatusDown, nil, httpStatusCode, observation
 }
 
-func (r *MonitoringService) httpCheck(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
+func (r *MonitoringService) httpCheck(ctx context.Context, monitoring monitor.Monitoring) (int, string, time.Duration, error) {
 	checker := r.httpChecker
 	if checker == nil {
 		checker = HTTPCheckFunc(r.performHTTPRequest)
@@ -470,10 +473,14 @@ func observePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, p
 		observation.TransportError = stringPointer("invalid_target")
 		return monitor.StatusDown, nil, observation
 	}
-	if err := target.ValidateHost(ctx, host, policy); err != nil {
+	// Resolve and validate once, then ping the validated address so the ping
+	// command cannot resolve the hostname to a different (private) address.
+	addresses, err := resolvePingHost(ctx, host, policy)
+	if err != nil {
 		observation.TransportError = stringPointer("target_rejected")
 		return monitor.StatusDown, nil, observation
 	}
+	address := addresses[0].Unmap().String()
 
 	timeoutSeconds := fixedPingTimeoutSeconds
 	if monitoring.Timeout > 0 {
@@ -483,7 +490,7 @@ func observePingMonitoring(ctx context.Context, monitoring monitor.Monitoring, p
 	if executor == nil {
 		executor = runPingCommand
 	}
-	output, err := executor(ctx, host, timeoutSeconds)
+	output, err := executor(ctx, address, timeoutSeconds)
 	responseTime := parsePingLatency(output)
 	if err != nil {
 		observation.TransportError = stringPointer("ping_failed")
@@ -576,10 +583,11 @@ func observePortMonitoring(ctx context.Context, monitoring monitor.Monitoring, p
 	return monitor.StatusUp, &responseTime, observation
 }
 
-func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
-	targetURL, err := target.HTTPURL(ctx, monitoring.Target, r.egressPolicy())
+func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring monitor.Monitoring) (int, string, time.Duration, error) {
+	policy := r.egressPolicy()
+	targetURL, err := target.HTTPURL(monitoring.Target, policy)
 	if err != nil {
-		return 0, "", err
+		return 0, "", 0, err
 	}
 
 	method := strings.ToLower(strings.TrimSpace(string(monitoring.HTTPMethod)))
@@ -590,10 +598,10 @@ func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring m
 	headers := normalizeHeaders(monitoring.HTTPHeaders)
 	body := normalizeBody(monitoring.HTTPBody)
 	if len(body) > fixedHTTPMaxRequestBodyBytes {
-		return 0, "", fmt.Errorf("monitoring request body exceeds %d bytes", fixedHTTPMaxRequestBodyBytes)
+		return 0, "", 0, fmt.Errorf("monitoring request body exceeds %d bytes", fixedHTTPMaxRequestBodyBytes)
 	}
 	if len(headers) > fixedHTTPMaxRequestHeaders || headerBytes(headers) > fixedHTTPMaxRequestHeaderBytes {
-		return 0, "", fmt.Errorf("monitoring request headers exceed configured limits")
+		return 0, "", 0, fmt.Errorf("monitoring request headers exceed configured limits")
 	}
 	if method == "get" || method == "delete" {
 		body = nil
@@ -602,44 +610,33 @@ func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring m
 		headers["Content-Type"] = "application/json"
 	}
 
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: target.SafeDialContext(r.egressPolicy()),
-		},
-		CheckRedirect: func(request *http.Request, via []*http.Request) error {
-			if len(via) >= fixedHTTPMaxRedirects {
-				return fmt.Errorf("stopped after %d redirects", fixedHTTPMaxRedirects)
-			}
-			if err := target.ValidateHost(request.Context(), request.URL.Hostname(), r.egressPolicy()); err != nil {
-				return err
-			}
-			return nil
-		},
-	}
+	timeout := fixedHTTPTimeoutSeconds * time.Second
 	if monitoring.Timeout > 0 {
-		httpClient.Timeout = time.Duration(monitoring.Timeout) * time.Second
-	} else {
-		httpClient.Timeout = fixedHTTPTimeoutSeconds * time.Second
+		timeout = time.Duration(monitoring.Timeout) * time.Second
 	}
+	// One deadline spans every URL variant and retry of this check.
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
-	retryTimes := fixedHTTPRetryTimes
-	attempts := retryTimes + 1
-	delay := fixedHTTPRetryDelay
+	httpClient, transport := newHTTPCheckClient(policy, timeout)
+	defer transport.CloseIdleConnections()
+
+	attempts := fixedHTTPRetryTimes + 1
 
 	var firstResponse *httpCheckResult
 	var lastErr error
+variants:
 	for _, candidateURL := range httpTargetVariants(targetURL) {
 		for attempt := 0; attempt < attempts; attempt++ {
-			result, err := performHTTPCheck(ctx, httpClient, method, candidateURL, headers, body, monitoring)
+			result, err := performHTTPCheck(checkCtx, httpClient, method, candidateURL, headers, body, monitoring)
 			if err != nil {
 				lastErr = err
+				if checkCtx.Err() != nil {
+					break variants
+				}
 				if attempt < attempts-1 {
-					timer := time.NewTimer(delay)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						return 0, "", ctx.Err()
-					case <-timer.C:
+					if !sleepContext(checkCtx, fixedHTTPRetryDelay) {
+						break variants
 					}
 					continue
 				}
@@ -650,16 +647,56 @@ func (r *MonitoringService) performHTTPRequest(ctx context.Context, monitoring m
 				firstResponse = &result
 			}
 			if result.statusCode >= http.StatusOK && result.statusCode < http.StatusBadRequest {
-				return result.statusCode, result.body, nil
+				return result.statusCode, result.body, result.duration, nil
 			}
 			break
 		}
 	}
 
-	if firstResponse != nil {
-		return firstResponse.statusCode, firstResponse.body, nil
+	if err := ctx.Err(); err != nil {
+		return 0, "", 0, err
 	}
-	return 0, "", lastErr
+	if firstResponse != nil {
+		return firstResponse.statusCode, firstResponse.body, firstResponse.duration, nil
+	}
+	if lastErr == nil {
+		lastErr = checkCtx.Err()
+	}
+	return 0, "", 0, lastErr
+}
+
+// newHTTPCheckClient builds a client for a single check. Every dial, including
+// those for redirect targets, goes through SafeDialContext, which resolves and
+// validates the addresses it connects to. Keep-alives are disabled so each
+// check measures a fresh connection and leaves no idle connections behind.
+func newHTTPCheckClient(policy target.EgressPolicy, timeout time.Duration) (*http.Client, *http.Transport) {
+	transport := &http.Transport{
+		DialContext:           target.SafeDialContext(policy),
+		DisableKeepAlives:     true,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+	}
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= fixedHTTPMaxRedirects {
+				return fmt.Errorf("stopped after %d redirects", fixedHTTPMaxRedirects)
+			}
+			return nil
+		},
+	}
+	return client, transport
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func headerBytes(headers map[string]string) int {
@@ -673,6 +710,7 @@ func headerBytes(headers map[string]string) int {
 type httpCheckResult struct {
 	statusCode int
 	body       string
+	duration   time.Duration
 }
 
 func performHTTPCheck(ctx context.Context, client *http.Client, method string, targetURL *url.URL, headers map[string]string, body []byte, monitoring monitor.Monitoring) (httpCheckResult, error) {
@@ -693,6 +731,7 @@ func performHTTPCheck(ctx context.Context, client *http.Client, method string, t
 		request.SetBasicAuth(monitoring.AuthUsername, monitoring.AuthPassword)
 	}
 
+	start := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
 		return httpCheckResult{}, err
@@ -704,7 +743,7 @@ func performHTTPCheck(ctx context.Context, client *http.Client, method string, t
 		return httpCheckResult{}, err
 	}
 
-	return httpCheckResult{statusCode: response.StatusCode, body: string(payload)}, nil
+	return httpCheckResult{statusCode: response.StatusCode, body: string(payload), duration: time.Since(start)}, nil
 }
 
 func httpTargetVariants(targetURL *url.URL) []*url.URL {

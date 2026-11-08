@@ -238,8 +238,8 @@ func TestRunMonitoringClaimsMixedJobsAndCompletesWithIdempotencyKey(t *testing.T
 		AllowPrivateTargets: true,
 		JobLeasesDualWrite:  true,
 	}, log.New(io.Discard, "", 0))
-	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
-		return http.StatusOK, "", nil
+	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, time.Duration, error) {
+		return http.StatusOK, "", 0, nil
 	})
 
 	if err := runner.RunMonitoring(context.Background()); err != nil {
@@ -326,8 +326,8 @@ func TestRunMonitoringDeduplicatesClaimedJobsAndUsesCoreIdempotencyKey(t *testin
 		WebGuardLocation: "de-1", WebGuardInstanceID: "worker-a", JobLeasesEnabled: true,
 		JobLeaseMaxBatch: 2, QueueDefaultWorkers: 2, JobLeasesDualWrite: true,
 	}, log.New(io.Discard, "", 0))
-	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
-		return http.StatusOK, "", nil
+	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, time.Duration, error) {
+		return http.StatusOK, "", 0, nil
 	})
 
 	if err := runner.RunMonitoring(context.Background()); err != nil {
@@ -369,10 +369,10 @@ func TestRunMonitoringRenewsLeaseAndReleasesWhenCanceled(t *testing.T) {
 		JobLeaseMaxBatch: 1, QueueDefaultWorkers: 1,
 	}, log.New(io.Discard, "", 0))
 	checkStarted := make(chan struct{}, 1)
-	runner.httpChecker = HTTPCheckFunc(func(ctx context.Context, _ monitor.Monitoring) (int, string, error) {
+	runner.httpChecker = HTTPCheckFunc(func(ctx context.Context, _ monitor.Monitoring) (int, string, time.Duration, error) {
 		checkStarted <- struct{}{}
 		<-ctx.Done()
-		return 0, "", ctx.Err()
+		return 0, "", 0, ctx.Err()
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -473,7 +473,7 @@ func TestPerformHTTPRequestRejectsOversizedConfiguredRequests(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, _, err := runner.performHTTPRequest(context.Background(), monitor.Monitoring{
+			_, _, _, err := runner.performHTTPRequest(context.Background(), monitor.Monitoring{
 				ID: "request-limit", Type: monitor.TypeHTTP, Target: server.URL,
 				HTTPMethod: monitor.HTTPMethodPost, HTTPBody: testCase.body, HTTPHeaders: testCase.headers,
 			})
@@ -504,7 +504,7 @@ func TestRunMonitoringBoundsConcurrentChecksAcrossConfiguredWorkers(t *testing.T
 	var maximum atomic.Int32
 	started := make(chan struct{}, 4)
 	release := make(chan struct{})
-	runner.httpChecker = HTTPCheckFunc(func(ctx context.Context, monitoring monitor.Monitoring) (int, string, error) {
+	runner.httpChecker = HTTPCheckFunc(func(ctx context.Context, monitoring monitor.Monitoring) (int, string, time.Duration, error) {
 		current := active.Add(1)
 		for previous := maximum.Load(); current > previous; previous = maximum.Load() {
 			if maximum.CompareAndSwap(previous, current) {
@@ -515,10 +515,10 @@ func TestRunMonitoringBoundsConcurrentChecksAcrossConfiguredWorkers(t *testing.T
 		select {
 		case <-ctx.Done():
 			active.Add(-1)
-			return 0, "", ctx.Err()
+			return 0, "", 0, ctx.Err()
 		case <-release:
 			active.Add(-1)
-			return http.StatusOK, monitoring.ID, nil
+			return http.StatusOK, monitoring.ID, 0, nil
 		}
 	})
 	controller := application.NewExecutionControllerWithTelemetry(runner, log.New(io.Discard, "", 0), 2, telemetry)
@@ -842,8 +842,8 @@ func TestRunResponseUsesSelectedIntervalAndReportsTheExecutedInterval(t *testing
 		{ID: "ping-monitoring", Type: monitor.TypePing, Target: "127.0.0.1", CheckIntervalSeconds: 300},
 	}}
 	runner := newTestService(client, config.Config{WebGuardLocation: "de-1", QueueDefaultWorkers: 1, AllowPrivateTargets: true}, log.New(io.Discard, "", 0))
-	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, error) {
-		return http.StatusOK, "", nil
+	runner.httpChecker = HTTPCheckFunc(func(context.Context, monitor.Monitoring) (int, string, time.Duration, error) {
+		return http.StatusOK, "", 0, nil
 	})
 	runner.pingExecutor = func(context.Context, string, int) ([]byte, error) {
 		return []byte("time=1 ms"), nil
