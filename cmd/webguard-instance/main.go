@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/marcel-breuer/webguard-instance/internal/adapters/coreapi"
@@ -17,11 +20,23 @@ import (
 	"github.com/marcel-breuer/webguard-instance/internal/config"
 )
 
-type monitoringService interface {
+type monitoringController interface {
 	RunMonitoring(ctx context.Context) error
+	BeginDrain()
+	IsDraining() bool
+	WaitForIdle(ctx context.Context) bool
 }
 
-type serveFunc func(logger *log.Logger, service monitoringService, cfg config.Config) int
+// monitoringControllers are scheduled independently so slow auxiliary phases
+// never cause a response run to be skipped as overlapping.
+type monitoringControllers struct {
+	controllers []monitoringController
+	telemetry   *application.Telemetry
+}
+
+type serveFunc func(logger *log.Logger, controllers monitoringControllers, cfg config.Config) int
+
+type healthStarter func(ctx context.Context, address string, logger *log.Logger, handler http.Handler) error
 
 func main() {
 	logger := log.New(os.Stdout, "", 0)
@@ -30,13 +45,72 @@ func main() {
 	coreClient := coreapi.NewClientWithInstanceAPIPath(cfg.WebGuardCoreAPIURL, cfg.WebGuardCoreAPIKey, cfg.WebGuardLocation, cfg.WebGuardInstanceAPIBasePath)
 	coreClient.SetAPIKeyFile(cfg.WebGuardCoreAPIKeyFile)
 	coreClient.SetTelemetry(telemetry)
-	service := application.NewExecutionControllerWithTelemetry(runner.NewWithTelemetry(coreClient, cfg, logger, telemetry), logger, cfg.RunMaxConcurrency, telemetry)
+	service := runner.NewWithTelemetry(coreClient, cfg, logger, telemetry)
 
-	exitCode := run(os.Args[1:], logger, cfg, service, runServe, os.Stderr)
+	exitCode := run(os.Args[1:], logger, cfg, newMonitoringControllers(service, logger, cfg, telemetry), runServe, os.Stderr)
 	os.Exit(exitCode)
 }
 
-func run(args []string, logger *log.Logger, cfg config.Config, service monitoringService, serve serveFunc, stderr io.Writer) int {
+func newMonitoringControllers(service *runner.MonitoringService, logger *log.Logger, cfg config.Config, telemetry *application.Telemetry) monitoringControllers {
+	limiter := application.NewExecutionLimiter(cfg.RunMaxConcurrency)
+	controller := func(name string, run application.MonitoringRunnerFunc) monitoringController {
+		return application.NewExecutionControllerWithTelemetry(run, logger, cfg.RunMaxConcurrency, telemetry,
+			application.WithExecutionLimiter(limiter),
+			application.WithRunName(name),
+		)
+	}
+	return monitoringControllers{
+		controllers: []monitoringController{
+			controller("response", service.RunResponse),
+			controller("auxiliary", service.RunAuxiliary),
+		},
+		telemetry: telemetry,
+	}
+}
+
+// RunMonitoring runs every controller once concurrently and joins their errors.
+func (m monitoringControllers) RunMonitoring(ctx context.Context) error {
+	failures := make([]error, len(m.controllers))
+	var runs sync.WaitGroup
+	for index, controller := range m.controllers {
+		runs.Add(1)
+		go func() {
+			defer runs.Done()
+			failures[index] = controller.RunMonitoring(ctx)
+		}()
+	}
+	runs.Wait()
+	return errors.Join(failures...)
+}
+
+func (m monitoringControllers) ready(cfg config.Config) bool {
+	for _, controller := range m.controllers {
+		if controller.IsDraining() {
+			return false
+		}
+	}
+	return cfg.IsReady()
+}
+
+// beginDrain stops new runs on every controller before any wait starts, so no
+// controller can start work while another one is still finishing.
+func (m monitoringControllers) beginDrain() {
+	for _, controller := range m.controllers {
+		controller.BeginDrain()
+	}
+}
+
+func (m monitoringControllers) waitForIdle(ctx context.Context) bool {
+	idle := true
+	for _, controller := range m.controllers {
+		if !controller.WaitForIdle(ctx) {
+			idle = false
+		}
+	}
+	return idle
+}
+
+func run(args []string, logger *log.Logger, cfg config.Config, controllers monitoringControllers, serve serveFunc, stderr io.Writer) int {
 	command := "serve"
 	if len(args) > 0 {
 		command = args[0]
@@ -44,9 +118,9 @@ func run(args []string, logger *log.Logger, cfg config.Config, service monitorin
 
 	switch command {
 	case "serve":
-		return serve(logger, service, cfg)
+		return serve(logger, controllers, cfg)
 	case "monitoring":
-		if err := service.RunMonitoring(context.Background()); err != nil {
+		if err := controllers.RunMonitoring(context.Background()); err != nil {
 			if logger != nil {
 				logger.Printf("Monitoring command failed: %v", err)
 			}
@@ -62,41 +136,36 @@ func run(args []string, logger *log.Logger, cfg config.Config, service monitorin
 	}
 }
 
-func runServe(logger *log.Logger, service monitoringService, cfg config.Config) int {
+func runServe(logger *log.Logger, controllers monitoringControllers, cfg config.Config) int {
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignals()
+	return serveUntil(signalContext, logger, controllers, cfg, health.StartWithHandler)
+}
+
+func serveUntil(shutdown context.Context, logger *log.Logger, controllers monitoringControllers, cfg config.Config, startHealth healthStarter) int {
 	dispatchContext, stopDispatch := context.WithCancel(context.Background())
 	defer stopDispatch()
 	healthContext, stopHealth := context.WithCancel(context.Background())
 	defer stopHealth()
 
-	readiness := health.ReadinessFunc(func() bool { return cfg.IsReady() })
-	telemetry := application.NewTelemetry()
-	if controller, ok := service.(*application.ExecutionController); ok {
-		telemetry = controller.Telemetry()
-		readiness = health.ReadinessFunc(func() bool { return cfg.IsReady() && !controller.IsDraining() })
-		go func() {
-			<-signalContext.Done()
-			controller.BeginDrain()
-			stopDispatch()
-			drainContext, cancelDrain := context.WithTimeout(context.Background(), cfg.ShutdownDrainTimeout)
-			defer cancelDrain()
-			if !controller.WaitForIdle(drainContext) && logger != nil {
-				logger.Println("Shutdown drain deadline reached with monitoring work still active.")
-			}
-			stopHealth()
-		}()
-	} else {
-		go func() {
-			<-signalContext.Done()
-			stopDispatch()
-			stopHealth()
-		}()
+	go func() {
+		<-shutdown.Done()
+		controllers.beginDrain()
+		stopDispatch()
+		drainContext, cancelDrain := context.WithTimeout(context.Background(), cfg.ShutdownDrainTimeout)
+		defer cancelDrain()
+		if !controllers.waitForIdle(drainContext) && logger != nil {
+			logger.Println("Shutdown drain deadline reached with monitoring work still active.")
+		}
+		stopHealth()
+	}()
+
+	for _, controller := range controllers.controllers {
+		go scheduler.RunEveryMinuteWithTelemetry(dispatchContext, logger, controllers.telemetry, controller.RunMonitoring)
 	}
 
-	go scheduler.RunEveryMinuteWithTelemetry(dispatchContext, logger, telemetry, service.RunMonitoring)
-
-	if err := health.StartWithHandler(healthContext, cfg.Address, logger, health.NewHandler(readiness, telemetry)); err != nil {
+	readiness := health.ReadinessFunc(func() bool { return controllers.ready(cfg) })
+	if err := startHealth(healthContext, cfg.Address, logger, health.NewHandler(readiness, controllers.telemetry)); err != nil {
 		logger.Printf("Health server exited with error: %v", err)
 		return 1
 	}

@@ -102,17 +102,88 @@ func NewWithTelemetry(client application.MonitoringGateway, cfg config.Config, l
 	return service
 }
 
-func (r *MonitoringService) runResponse(ctx context.Context) error {
-	r.logger.Println("Dispatching response monitoring jobs...")
+// phaseDispatch describes how one phase fetches, filters, and reports its
+// monitorings; the worker-pool dispatch itself is shared by every phase.
+type phaseDispatch struct {
+	phase ExecutionPhase
+	// name appears inside progress logs and title starts the summary log.
+	name            string
+	title           string
+	unsupportedName string
+	// cadence enforces per-monitoring response intervals; nil dispatches every
+	// supported monitoring.
+	cadence   *responseCadence
+	logResult func(monitor.Monitoring, Execution)
+}
 
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseResponse))
+func (r *MonitoringService) runResponse(ctx context.Context) error {
+	r.responseCadence.prune(r.now())
+	return r.dispatchPhase(ctx, phaseDispatch{
+		phase:           PhaseResponse,
+		name:            "response",
+		title:           "Response",
+		unsupportedName: "passive/unsupported response",
+		cadence:         r.responseCadence,
+		logResult: func(monitoring monitor.Monitoring, execution Execution) {
+			r.logger.Printf(
+				"Response monitoring result computed (monitoring_id=%s type=%s %s)",
+				monitoring.ID,
+				monitoring.Type,
+				execution,
+			)
+		},
+	})
+}
+
+func (r *MonitoringService) runSSL(ctx context.Context) error {
+	return r.runAuxiliaryPhase(ctx, phaseDispatch{
+		phase:           PhaseSSL,
+		name:            "SSL",
+		title:           "SSL",
+		unsupportedName: "passive/unsupported SSL",
+	})
+}
+
+func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
+	return r.runAuxiliaryPhase(ctx, phaseDispatch{
+		phase:           PhaseDomainExpiration,
+		name:            "domain expiration",
+		title:           "Domain expiration",
+		unsupportedName: "unsupported domain expiration",
+		logResult: func(monitoring monitor.Monitoring, execution Execution) {
+			r.logger.Printf(
+				"Domain expiration monitoring result computed (monitoring_id=%s %s)",
+				monitoring.ID,
+				execution,
+			)
+		},
+	})
+}
+
+func (r *MonitoringService) runAuxiliaryPhase(ctx context.Context, dispatch phaseDispatch) error {
+	if !r.allowAuxiliaryPhase(dispatch.phase) {
+		return nil
+	}
+	if err := r.dispatchPhase(ctx, dispatch); err != nil {
+		// A failed fetch dispatched nothing, so retry on the next tick instead
+		// of waiting for the full auxiliary interval.
+		r.resetAuxiliaryPhase(dispatch.phase)
+		return err
+	}
+	return nil
+}
+
+func (r *MonitoringService) dispatchPhase(ctx context.Context, dispatch phaseDispatch) error {
+	r.logger.Printf("Dispatching %s monitoring jobs...", dispatch.name)
+
+	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(dispatch.phase))
 	if err != nil {
 		r.logFetchError(err)
 		return err
 	}
 
 	if len(monitorings) == 0 {
-		r.logger.Println("No active response monitoring found.")
+		r.logger.Printf("No active %s monitoring found.", dispatch.name)
 		return nil
 	}
 
@@ -130,44 +201,32 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			for monitoring := range jobs {
-				if !r.responseCadence.tryStart(monitoring, r.cfg.WebGuardLocation, r.now()) {
-					r.telemetry.DropQueuedJob(string(PhaseResponse), "cadence")
-					r.logger.Printf("Skipping response monitoring until its selected interval is due (monitoring_id=%s interval_seconds=%d)", monitoring.ID, monitoring.CheckIntervalSeconds)
-					continue
-				}
-
-				execution, _ := r.executeMonitoring(ctx, PhaseResponse, monitoring)
-				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseResponse, executionOutcome(execution))
-				r.logger.Printf(
-					"Response monitoring result computed (monitoring_id=%s type=%s %s)",
-					monitoring.ID,
-					monitoring.Type,
-					execution,
-				)
-				r.publishExecution(ctx, execution)
+				r.runDispatchedMonitoring(ctx, dispatch, monitoring)
 			}
 		}()
 	}
 
 	for _, monitoring := range monitorings {
-		if !r.executors.Supports(PhaseResponse, monitoring.Type) {
+		if !r.executors.Supports(dispatch.phase, monitoring.Type) {
 			skippedUnsupported++
 			r.logger.Printf(
-				"Skipping passive/unsupported response monitoring (monitoring_id=%s type=%s)",
+				"Skipping %s monitoring (monitoring_id=%s type=%s)",
+				dispatch.unsupportedName,
 				monitoring.ID,
 				monitoring.Type,
 			)
 			continue
 		}
 
-		if !responseDue(monitoring, r.now()) {
+		if dispatch.cadence != nil && !responseDue(monitoring, r.now()) {
 			skippedCadence++
 			continue
 		}
 
 		if monitoring.MaintenanceActive {
 			skippedMaintenance++
-			r.publishExecution(ctx, maintenanceExecution(PhaseResponse, monitoring.ID))
+			// SSL maintenance yields an empty execution, which publishes nothing.
+			r.publishExecution(ctx, maintenanceExecution(dispatch.phase, monitoring.ID))
 			continue
 		}
 
@@ -178,178 +237,73 @@ func (r *MonitoringService) runResponse(ctx context.Context) error {
 	close(jobs)
 	workers.Wait()
 
-	r.logger.Printf(
-		"Response monitoring dispatch done. total=%d dispatched=%d skipped_cadence=%d skipped_maintenance=%d skipped_unsupported=%d",
-		len(monitorings),
-		dispatched,
-		skippedCadence,
-		skippedMaintenance,
-		skippedUnsupported,
-	)
+	summary := fmt.Sprintf("%s monitoring dispatch done. total=%d dispatched=%d", dispatch.title, len(monitorings), dispatched)
+	if dispatch.cadence != nil {
+		summary += fmt.Sprintf(" skipped_cadence=%d", skippedCadence)
+	}
+	r.logger.Printf("%s skipped_maintenance=%d skipped_unsupported=%d", summary, skippedMaintenance, skippedUnsupported)
 
 	return nil
 }
 
-func (r *MonitoringService) runSSL(ctx context.Context) error {
-	if !r.allowAuxiliaryPhase(PhaseSSL) {
-		return nil
+func (r *MonitoringService) runDispatchedMonitoring(ctx context.Context, dispatch phaseDispatch, monitoring monitor.Monitoring) {
+	if dispatch.cadence != nil && !dispatch.cadence.tryStart(monitoring, r.cfg.WebGuardLocation, r.now()) {
+		r.telemetry.DropQueuedJob(string(dispatch.phase), "cadence")
+		r.logger.Printf("Skipping %s monitoring until its selected interval is due (monitoring_id=%s interval_seconds=%d)", dispatch.name, monitoring.ID, monitoring.CheckIntervalSeconds)
+		return
 	}
 
-	r.logger.Println("Dispatching SSL monitoring jobs...")
-
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseSSL))
-	if err != nil {
-		r.logFetchError(err)
-		return err
+	execution, _ := r.executeMonitoring(ctx, dispatch.phase, monitoring)
+	r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, dispatch.phase, executionOutcome(execution))
+	if dispatch.logResult != nil {
+		dispatch.logResult(monitoring, execution)
 	}
-
-	if len(monitorings) == 0 {
-		r.logger.Println("No active SSL monitoring found.")
-		return nil
-	}
-
-	dispatched := 0
-	skippedMaintenance := 0
-	skippedUnsupported := 0
-
-	jobs := make(chan monitor.Monitoring)
-	var workers sync.WaitGroup
-
-	workerCount := r.workerLimit()
-	for i := 0; i < workerCount; i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for monitoring := range jobs {
-				execution, _ := r.executeMonitoring(ctx, PhaseSSL, monitoring)
-				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseSSL, executionOutcome(execution))
-				r.publishExecution(ctx, execution)
-			}
-		}()
-	}
-
-	for _, monitoring := range monitorings {
-		if !r.executors.Supports(PhaseSSL, monitoring.Type) {
-			skippedUnsupported++
-			r.logger.Printf(
-				"Skipping passive/unsupported SSL monitoring (monitoring_id=%s type=%s)",
-				monitoring.ID,
-				monitoring.Type,
-			)
-			continue
-		}
-
-		if monitoring.MaintenanceActive {
-			skippedMaintenance++
-			continue
-		}
-		dispatched++
-		r.telemetry.QueueJob()
-		jobs <- monitoring
-	}
-	close(jobs)
-	workers.Wait()
-
-	r.logger.Printf(
-		"SSL monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d skipped_unsupported=%d",
-		len(monitorings),
-		dispatched,
-		skippedMaintenance,
-		skippedUnsupported,
-	)
-
-	return nil
+	r.publishExecution(ctx, execution)
 }
 
-func (r *MonitoringService) runDomainExpiration(ctx context.Context) error {
-	if !r.allowAuxiliaryPhase(PhaseDomainExpiration) {
-		return nil
-	}
-
-	r.logger.Println("Dispatching domain expiration monitoring jobs...")
-
-	monitorings, err := r.client.GetMonitorings(ctx, r.cfg.WebGuardLocation, r.executors.Types(PhaseDomainExpiration))
-	if err != nil {
-		r.logFetchError(err)
-		return err
-	}
-
-	if len(monitorings) == 0 {
-		r.logger.Println("No active domain expiration monitoring found.")
-		return nil
-	}
-
-	dispatched := 0
-	skippedMaintenance := 0
-	skippedUnsupported := 0
-
-	jobs := make(chan monitor.Monitoring)
-	var workers sync.WaitGroup
-
-	workerCount := r.workerLimit()
-	for i := 0; i < workerCount; i++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for monitoring := range jobs {
-				execution, _ := r.executeMonitoring(ctx, PhaseDomainExpiration, monitoring)
-				r.logger.Printf("run_id=%s monitoring_id=%s phase=%s outcome=%s", application.RunID(ctx), monitoring.ID, PhaseDomainExpiration, executionOutcome(execution))
-				r.logger.Printf(
-					"Domain expiration monitoring result computed (monitoring_id=%s %s)",
-					monitoring.ID,
-					execution,
-				)
-				r.publishExecution(ctx, execution)
-			}
-		}()
-	}
-
-	for _, monitoring := range monitorings {
-		if !r.executors.Supports(PhaseDomainExpiration, monitoring.Type) {
-			skippedUnsupported++
-			r.logger.Printf(
-				"Skipping unsupported domain expiration monitoring (monitoring_id=%s type=%s)",
-				monitoring.ID,
-				monitoring.Type,
-			)
-			continue
-		}
-
-		if monitoring.MaintenanceActive {
-			skippedMaintenance++
-			r.publishExecution(ctx, maintenanceExecution(PhaseDomainExpiration, monitoring.ID))
-			continue
-		}
-
-		dispatched++
-		r.telemetry.QueueJob()
-		jobs <- monitoring
-	}
-	close(jobs)
-	workers.Wait()
-
-	r.logger.Printf(
-		"Domain expiration monitoring dispatch done. total=%d dispatched=%d skipped_maintenance=%d skipped_unsupported=%d",
-		len(monitorings),
-		dispatched,
-		skippedMaintenance,
-		skippedUnsupported,
-	)
-
-	return nil
-}
-
+// RunMonitoring runs every phase once and waits for all of them.
 func (r *MonitoringService) RunMonitoring(ctx context.Context) error {
 	r.logger.Println("Dispatching all monitoring jobs...")
 	if r.cfg.JobLeasesEnabled {
 		return r.runClaimedJobs(ctx)
 	}
 
-	return application.NewCoordinator(r.logger,
-		monitoringPhase{name: "response", run: r.runResponse},
-		monitoringPhase{name: "SSL", run: r.runSSL},
-		monitoringPhase{name: "domain expiration", run: r.runDomainExpiration},
-	).Run(ctx)
+	return application.NewCoordinator(r.logger, r.responsePhase(), r.sslPhase(), r.domainExpirationPhase()).Run(ctx)
+}
+
+// RunResponse runs the response phase only, or the claimed job batch when job
+// leases are enabled because Core then schedules every phase. Scheduling it
+// independently from RunAuxiliary keeps slow SSL and domain lookups from
+// delaying or skipping response checks.
+func (r *MonitoringService) RunResponse(ctx context.Context) error {
+	if r.cfg.JobLeasesEnabled {
+		return r.runClaimedJobs(ctx)
+	}
+
+	return application.NewCoordinator(r.logger, r.responsePhase()).Run(ctx)
+}
+
+// RunAuxiliary runs the SSL and domain expiration phases on their own cadence.
+// It does nothing when job leases are enabled because claimed jobs already
+// cover those phases.
+func (r *MonitoringService) RunAuxiliary(ctx context.Context) error {
+	if r.cfg.JobLeasesEnabled {
+		return nil
+	}
+
+	return application.NewCoordinator(r.logger, r.sslPhase(), r.domainExpirationPhase()).Run(ctx)
+}
+
+func (r *MonitoringService) responsePhase() monitoringPhase {
+	return monitoringPhase{name: "response", run: r.runResponse}
+}
+
+func (r *MonitoringService) sslPhase() monitoringPhase {
+	return monitoringPhase{name: "SSL", run: r.runSSL}
+}
+
+func (r *MonitoringService) domainExpirationPhase() monitoringPhase {
+	return monitoringPhase{name: "domain expiration", run: r.runDomainExpiration}
 }
 
 type monitoringPhase struct {
@@ -405,6 +359,12 @@ func (r *MonitoringService) allowAuxiliaryPhase(phase ExecutionPhase) bool {
 
 	r.phaseLastRuns[phase] = now
 	return true
+}
+
+func (r *MonitoringService) resetAuxiliaryPhase(phase ExecutionPhase) {
+	r.phaseScheduleMu.Lock()
+	defer r.phaseScheduleMu.Unlock()
+	delete(r.phaseLastRuns, phase)
 }
 
 func (r *MonitoringService) logFetchError(err error) {
