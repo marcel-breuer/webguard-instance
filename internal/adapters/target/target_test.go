@@ -147,7 +147,7 @@ func TestValidateHostAllowsPrivateAddressesWhenConfigured(t *testing.T) {
 func TestHTTPURLRejectsUnsupportedSchemes(t *testing.T) {
 	t.Parallel()
 
-	_, err := HTTPURL(context.Background(), "file:///etc/passwd", EgressPolicy{AllowPrivate: true})
+	_, err := HTTPURL("file:///etc/passwd", EgressPolicy{AllowPrivate: true})
 	if err == nil {
 		t.Fatalf("expected unsupported scheme error")
 	}
@@ -156,10 +156,10 @@ func TestHTTPURLRejectsUnsupportedSchemes(t *testing.T) {
 func TestHTTPURLRejectsEmbeddedCredentialsAndOversizedTarget(t *testing.T) {
 	t.Parallel()
 
-	if _, err := HTTPURL(context.Background(), "https://user:secret@example.com/", EgressPolicy{}); err == nil {
+	if _, err := HTTPURL("https://user:secret@example.com/", EgressPolicy{}); err == nil {
 		t.Fatal("expected embedded target credentials to be rejected")
 	}
-	if _, err := HTTPURL(context.Background(), "https://example.com/"+strings.Repeat("a", 4097), EgressPolicy{}); err == nil {
+	if _, err := HTTPURL("https://example.com/"+strings.Repeat("a", 4097), EgressPolicy{}); err == nil {
 		t.Fatal("expected oversized target to be rejected")
 	}
 }
