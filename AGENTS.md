@@ -346,3 +346,23 @@ A task is complete only when:
 - Documentation is updated where required.
 - No unintended files changed.
 - Assumptions and remaining risks are stated.
+
+## CI/CD Pipeline
+
+Stand: 2026-11-15
+
+### Behaltene Workflows
+
+- `.github/workflows/ci.yml` (Go Checks): Go-Unit-Tests (`go test ./...`), Race-Detector-Tests (`go test -race ./...`), Binary-Build (`go build ./cmd/webguard-instance`) und Production-Image-Build bei Pull Requests (`docker build --target production`). Läuft nur bei Änderungen an Go-, Docker- oder Modul-Dateien.
+- `.github/workflows/docker-image.yml` (Docker Image): Veröffentlicht das Production-Image nach GHCR (Branch, Tag, SHA, `latest` auf Default-Branch). Bei Tags `v*` zusätzlich Release-Job: Changelog-Erzeugung, CHANGELOG.md-Update und GitHub-Release.
+
+### Entfernte Workflows und Jobs
+
+- `.github/workflows/dependabot-auto-merge.yml`: Aktivierte Auto-Merge für Dependabot-PRs. Entfernt, damit keine Merges ohne manuelle Prüfung passieren.
+- Schritt "Check formatting" (`gofmt -l .`) in `ci.yml`: reiner Format-Check ohne Tests. Entfernt.
+- Schritt "Vet" (`go vet ./...`) in `ci.yml`: reiner Lint-Check ohne Tests. Entfernt.
+- Schritt "Vulnerability check" (`govulncheck`) in `ci.yml`: Security-Scan ohne Tests. Entfernt.
+
+### Regel
+
+Vor jedem PR lokal alle Pipeline-Schritte ausführen: mindestens `go test ./...`, `go test -race ./...`, `go build ./cmd/webguard-instance` und, falls Docker verfügbar, `docker build --target production -t webguard-instance:test .`. Release- und Publish-Jobs nur syntaktisch prüfen, nicht ausführen.
