@@ -1,4 +1,4 @@
-FROM golang:1.26.1-alpine AS base
+FROM golang:1.26.10-alpine AS base
 WORKDIR /app
 RUN apk add --no-cache ca-certificates tzdata git iputils
 COPY go.mod go.sum ./
